@@ -1,0 +1,1853 @@
+{% extends "base.html" %}
+
+{% block title %}故障管理 - EdgeWind{% endblock %}
+{% block page_title %}故障管理{% endblock %}
+
+{% block content %}
+<!-- 故障列表表格 -->
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center bg-white py-3 border-0">
+        <h5 class="mb-0 fw-bold text-primary">
+            <i class="bi bi-clipboard-list me-2"></i>故障日志
+        </h5>
+        
+        <div class="d-flex gap-2">
+            <select class="form-select form-select-sm border-light bg-light" id="status-filter" style="width: 120px; font-size: 13px;" title="筛选工单状态" aria-label="筛选工单状态">
+                <option value="">所有状态</option>
+                <option value="pending">待处理</option>
+                <option value="processing">处理中</option>
+                <option value="resolved">已解决</option>
+            </select>
+
+            <select class="form-select form-select-sm border-light bg-light" id="device-filter" style="width: 120px; font-size: 13px;" title="筛选设备" aria-label="筛选设备">
+                <option value="">所有设备</option>
+            </select>
+
+            <div class="input-group input-group-sm" style="width: 200px;">
+                <span class="input-group-text"><i class="bi bi-search text-muted"></i></span>
+                <input type="text" class="form-control" id="fault-search" placeholder="搜索日志..." style="font-size: 13px;">
+            </div>
+
+            <button class="btn btn-sm btn-light text-primary" onclick="refreshFaultTable()" title="刷新">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+            
+            <button class="btn btn-sm btn-outline-primary" onclick="exportData()" title="导出数据">
+                <i class="bi bi-download"></i> 导出
+            </button>
+        </div>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>状态</th>
+                        <th>严重程度</th>
+                        <th>故障描述</th>
+                        <th>机组</th>
+                        <th>时间</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="fault-table-body">
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-4">
+                            <i class="bi bi-hourglass-split"></i> 加载中...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- 诊断模态框 -->
+<div class="modal fade" id="diagnosisModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">智能故障诊断引擎</h5>
+                <button type="button" class="btn btn-sm btn-outline-secondary me-2" id="reset-graph-btn" onclick="resetKnowledgeGraph()">
+                    <i class="bi bi-arrow-counterclockwise"></i> 重置视图
+                </button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <h6 class="mb-3">故障详情</h6>
+                        <div id="fault-details">
+                            <!-- 动态填充 -->
+                        </div>
+                    </div>
+                    <div class="col-md-8">
+                        <h6 class="mb-3">知识图谱诊断</h6>
+                        <div id="diagnosis-graph" style="width: 100%; height: 850px;"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-success" onclick="exportWorkOrder()">
+                    <i class="bi bi-file-earmark-word"></i> 导出工单
+                </button>
+                <button type="button" class="btn btn-primary" id="dispatch-fault-btn" style="display: none;">
+                    <i class="bi bi-clipboard-check"></i> 确认派单
+                </button>
+                <button type="button" class="btn btn-success" id="resolve-fault-btn" style="display: none;">
+                    <i class="bi bi-check-circle"></i> 维修完成
+                </button>
+                <button type="button" class="btn btn-secondary" id="archived-btn" style="display: none;" disabled>
+                    <i class="bi bi-archive"></i> 已归档
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* ========== Modern Soft SaaS Styling ========== */
+    
+    /* Table Card Styling */
+    .card {
+        box-shadow: 0 0 40px 0 rgba(0,0,0,.05);
+        border: none;
+        border-radius: 12px;
+        background: #fff;
+    }
+
+    /* ========== Soft Badges ========== */
+    .badge {
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+        border: none;
+    }
+    
+    .badge-soft-danger {
+        background-color: #ffe5e5;
+        color: #d32f2f;
+    }
+    
+    .badge-soft-warning {
+        background-color: #fff8e1;
+        color: #f57c00;
+    }
+    
+    .badge-soft-success {
+        background-color: #e8f5e9;
+        color: #2e7d32;
+    }
+    
+    .badge-soft-primary {
+        background-color: #e3f2fd;
+        color: #1976d2;
+    }
+    
+    .badge-soft-info {
+        background-color: #e0f7fa;
+        color: #0277bd;
+    }
+
+    /* ========== Table Styling ========== */
+    .table thead th {
+        border-bottom: 2px solid #f0f2f5;
+        color: #8898aa;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 700;
+        padding: 12px 16px;
+        background: transparent;
+    }
+    
+    .table tbody td {
+        padding: 16px;
+        vertical-align: middle;
+        color: #525f7f;
+        border-bottom: 1px solid #f5f7fa;
+        font-size: 13px;
+    }
+    
+    .table-hover tbody tr:hover {
+        background-color: #fcfcfc;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 6px rgba(50, 50, 93, 0.04);
+        transition: all 0.2s ease;
+        position: relative;
+        z-index: 1;
+    }
+
+    /* ========== Spotlight Search Input ========== */
+    #fault-search {
+        border-radius: 20px;
+        background-color: #f5f7fa;
+        border: none;
+        padding: 8px 16px;
+        transition: all 0.3s ease;
+    }
+    
+    #fault-search:focus {
+        background-color: #fff;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        border: 1px solid rgba(37, 99, 235, 0.2);
+        outline: none;
+    }
+    
+    .input-group-text {
+        background-color: #f5f7fa;
+        border: none;
+        border-radius: 20px 0 0 20px;
+    }
+    
+    .input-group-sm .input-group-text {
+        padding-left: 16px;
+    }
+
+    /* Toolbar Inputs */
+    .form-select-sm, .form-control-sm {
+        border-radius: 8px;
+        box-shadow: none !important;
+        transition: all 0.2s;
+        border: 1px solid #e9ecef;
+    }
+
+    .form-select-sm:hover, .form-control:hover {
+        background-color: #f8f9fa;
+        border-color: #dee2e6;
+    }
+
+    .form-select-sm:focus, .form-control:focus {
+        background-color: #fff;
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    /* ========== 知识图谱模态框样式 ========== */
+    #diagnosisModal .modal-dialog {
+        max-width: 75% !important;
+        width: 75% !important;
+        max-height: 98vh;
+        margin: 1vh auto;
+    }
+    
+    #diagnosisModal .modal-content {
+        height: 98vh !important;
+        max-height: 98vh !important;
+        display: flex;
+        flex-direction: column;
+        background: #ffffff !important;
+        color: #1f2937 !important;
+    }
+    
+    #diagnosisModal .modal-header {
+        background: #f8f9fa !important;
+        border-bottom: 1px solid #dee2e6 !important;
+        color: #1f2937 !important;
+        flex-shrink: 0;
+    }
+    
+    #diagnosisModal .modal-title {
+        color: #1f2937 !important;
+        font-weight: 600;
+    }
+    
+    #diagnosisModal .modal-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 1.5rem;
+        color: #1f2937 !important;
+        background: #ffffff !important;
+    }
+    
+    #diagnosisModal .modal-footer {
+        flex-shrink: 0;
+        background: #f8f9fa !important;
+        border-top: 1px solid #dee2e6 !important;
+    }
+    
+    #diagnosisModal .modal-footer {
+        background: #f8f9fa !important;
+        border-top: 1px solid #dee2e6 !important;
+    }
+    
+    /* 确保模态框内所有文字都是深色 - 特别是故障详情部分 */
+    #diagnosisModal h6,
+    #diagnosisModal h5,
+    #diagnosisModal h4,
+    #diagnosisModal h3,
+    #diagnosisModal h2,
+    #diagnosisModal h1 {
+        color: #1f2937 !important;
+    }
+    
+    #diagnosisModal p,
+    #diagnosisModal div,
+    #diagnosisModal span,
+    #diagnosisModal strong,
+    #diagnosisModal code,
+    #diagnosisModal small {
+        color: #1f2937 !important;
+    }
+    
+    /* 故障详情区域特别处理 */
+    #diagnosisModal #fault-details,
+    #diagnosisModal #fault-details * {
+        color: #1f2937 !important;
+    }
+    
+    #diagnosisModal #fault-details strong {
+        color: #1f2937 !important;
+        font-weight: 600;
+    }
+    
+    #diagnosisModal #fault-details code {
+        background: #f3f4f6 !important;
+        color: #1f2937 !important;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: 'Courier New', monospace;
+    }
+    
+    #diagnosisModal #fault-details code.text-danger {
+        color: #dc3545 !important;
+    }
+    
+    #diagnosisModal .text-muted {
+        color: #6b7280 !important;
+    }
+    
+    #diagnosisModal .btn-close {
+        filter: none;
+        opacity: 0.5;
+    }
+    
+    #diagnosisModal .btn-close:hover {
+        opacity: 1;
+    }
+
+    /* Responsive adjustments for mobile */
+    @media (max-width: 768px) {
+        .card-header {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 1rem;
+        }
+        
+        .card-header .d-flex {
+            width: 100%;
+            flex-wrap: wrap;
+        }
+        
+        .card-header .d-flex > * {
+            flex: 1 1 auto;
+            min-width: 120px;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // ========== 工具函数（必须放在本页主逻辑之前，避免 ReferenceError）==========
+    // 说明：base.html 只渲染 extra_js，不渲染 scripts；因此这些函数必须在 extra_js 内定义。
+    function getCsrfToken() {
+        const el = document.querySelector('meta[name="csrf-token"]');
+        return el ? (el.getAttribute('content') || '') : '';
+    }
+
+    // 安全：HTML转义，防止把设备/位置/AI推荐等字段直接拼进 innerHTML 引发 XSS
+    function escapeHtml(s) {
+        const str = String(s ?? '');
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    let diagnosisChart = null;
+    let currentFaultId = null;
+    let currentFault = null;  // 当前选中的故障对象（用于导出中文文件名等）
+    let globalFaultData = [];  // 全局存储从API获取的原始故障数据
+    let allFaults = globalFaultData;  // 保持向后兼容，但使用 globalFaultData
+    let originalGraphData = null;  // 保存原始图谱数据，用于重置
+    let expandedNodes = new Set();  // 记录已展开的节点，避免重复展开
+    let previousFaultIds = null;  // 存储上一次的故障ID集合，用于检测新故障
+
+    // 文件名清洗：Windows 不允许出现 \ / : * ? " < > |
+    function sanitizeFilename(name) {
+        return String(name || '')
+            .replace(/[\\/:*?"<>|]/g, '_')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function formatTsCompact(d) {
+        const dt = (d instanceof Date) ? d : new Date(d || Date.now());
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${dt.getFullYear()}${pad(dt.getMonth() + 1)}${pad(dt.getDate())}_${pad(dt.getHours())}${pad(dt.getMinutes())}${pad(dt.getSeconds())}`;
+    }
+
+    // 故障快照事件API使用本地时间字符串：YYYY-MM-DD HH:MM:SS
+    // 统一使用北京时间（Asia/Shanghai），避免浏览器本地时区导致“差8小时/差7小时”
+    function formatDateTimeForSnapshot(dt) {
+        const d = (dt instanceof Date) ? dt : new Date(dt || Date.now());
+        const parts = new Intl.DateTimeFormat('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }).formatToParts(d);
+
+        const map = {};
+        parts.forEach(p => { map[p.type] = p.value; });
+        return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
+    }
+
+    // 跳转到“故障快照”并自动定位事件（device_id + fault_code + timestamp）
+    function jumpToFaultSnapshot(fault) {
+        if (!fault) return;
+        const deviceId = fault.device_id || '';
+        const faultCode = fault.fault_code || '';
+        if (!deviceId || !faultCode || faultCode === 'E00') {
+            alert('该记录没有可用的故障快照信息');
+            return;
+        }
+
+        // /api/faults 已返回本地时间（带T），这里统一格式化为快照事件的时间串
+        const dt = new Date(fault.fault_time || Date.now());
+        const timestamp = formatDateTimeForSnapshot(dt);
+
+        const url = `/snapshots?device_id=${encodeURIComponent(deviceId)}&fault_code=${encodeURIComponent(faultCode)}&timestamp=${encodeURIComponent(timestamp)}`;
+        // 同页跳转（更符合“点击跳转”）
+        window.location.href = url;
+    }
+
+    // 防止 2s 轮询导致请求堆积：同一时刻只允许一个 /api/faults 在飞
+    let _faultsLoadingInFlight = false;
+
+    async function loadFaults() {
+        if (_faultsLoadingInFlight) {
+            return;
+        }
+        _faultsLoadingInFlight = true;
+        try {
+            const tbody = document.getElementById('fault-table-body');
+
+            // 仅在“首次加载/尚未成功渲染过数据”时提示，避免轮询时表格频繁闪烁
+            if (tbody && (!globalFaultData || globalFaultData.length === 0)) {
+                const hasLoadingHint = (tbody.textContent || '').includes('加载中');
+                if (hasLoadingHint) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-4">
+                                <i class="bi bi-arrow-repeat"></i> 正在获取故障数据...（8秒超时自动提示）
+                            </td>
+                        </tr>
+                    `;
+                }
+            }
+
+            // 保存当前滚动位置（用于刷新后恢复）
+            const tableContainer = document.querySelector('.table-responsive');
+            const scrollTop = tableContainer ? tableContainer.scrollTop : 0;
+            
+            // 防止请求一直 pending 导致页面永远“获取中”：增加超时控制（8秒）
+            const controller = new AbortController();
+            const timeoutMs = 8000;
+            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+            // 只获取数据，不应用任何过滤（获取所有数据用于客户端过滤）
+            const response = await fetch('/api/faults', {
+                method: 'GET',
+                // 显式声明同源携带 Cookie，避免某些浏览器/扩展导致“已登录页面但 API 被当成未登录”
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: controller.signal,
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+            clearTimeout(timeoutId);
+
+            // 典型问题：登录态丢失/未携带 Cookie -> 302 跳转到 /login
+            if (response.status === 302 || response.redirected || (response.url && response.url.includes('/login'))) {
+                console.warn('[loadFaults] 登录态可能已失效，API 返回重定向到登录页');
+                if (tbody) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-4">
+                                <div class="mb-2">
+                                    <i class="bi bi-shield-lock"></i> 登录态已失效，无法获取故障日志
+                                </div>
+                                <a class="btn btn-sm btn-outline-primary" href="/login?next=/faults">重新登录</a>
+                                <button class="btn btn-sm btn-light ms-2" onclick="refreshFaultTable()">重试</button>
+                            </td>
+                        </tr>
+                    `;
+                }
+                return;
+            }
+            
+            // 处理 HTTP 错误（404, 500 等）
+            if (!response.ok) {
+                console.error(`[loadFaults] HTTP错误: ${response.status} ${response.statusText}`);
+                const ct = response.headers.get('content-type') || '';
+                let details = '';
+                try {
+                    details = ct.includes('application/json') ? JSON.stringify(await response.json()) : (await response.text());
+                } catch (e) {
+                    details = '';
+                }
+
+                if (tbody) {
+                    const safeDetails = escapeHtml(details || '');
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-4">
+                                <div class="mb-2">
+                                    <i class="bi bi-exclamation-triangle"></i> 获取故障日志失败（HTTP ${response.status}）
+                                </div>
+                                <div class="small text-muted mb-2">请检查服务器运行状态与网络连接</div>
+                                <button class="btn btn-sm btn-light" onclick="refreshFaultTable()">重试</button>
+                                ${safeDetails ? `<div class="small text-start mt-3" style="max-height: 180px; overflow:auto; white-space: pre-wrap;">${safeDetails}</div>` : ''}
+                            </td>
+                        </tr>
+                    `;
+                }
+                return;
+            }
+            
+            const ct = response.headers.get('content-type') || '';
+            if (!ct.includes('application/json')) {
+                const text = await response.text();
+                console.error('[loadFaults] API返回非JSON，可能被代理/登录页替换:', text.slice(0, 200));
+                if (tbody) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-4">
+                                <div class="mb-2">
+                                    <i class="bi bi-exclamation-triangle"></i> 获取故障日志失败（返回格式异常）
+                                </div>
+                                <div class="small text-muted mb-2">API 未返回 JSON，可能是登录页/代理错误导致</div>
+                                <button class="btn btn-sm btn-light" onclick="refreshFaultTable()">重试</button>
+                            </td>
+                        </tr>
+                    `;
+                }
+                return;
+            }
+
+            const data = await response.json();
+            
+            // 检查响应数据格式
+            if (!data || typeof data !== 'object') {
+                console.error('[loadFaults] API返回数据格式错误:', data);
+                return;
+            }
+            
+            // 调试日志：打印接收到的故障数量
+            const faultCount = (data.faults || []).length;
+            console.log(`[loadFaults] 接收到 ${faultCount} 条故障记录`);
+            if (faultCount > 0) {
+                const latestFault = data.faults[0];
+                console.log(`[loadFaults] 最新故障: ID=${latestFault.id}, 设备=${latestFault.device_id}, 状态=${latestFault.status}, 类型=${latestFault.fault_type}`);
+                // 打印所有故障的设备ID，用于调试
+                const deviceIds = data.faults.slice(0, 5).map(f => f.device_id);
+                console.log(`[loadFaults] 前5个故障的设备ID:`, deviceIds);
+            } else {
+                console.warn(`[loadFaults] ⚠️  警告: API返回了0条故障记录`);
+                console.log(`[loadFaults] 完整API响应:`, JSON.stringify(data, null, 2));
+            }
+            
+            // 获取当前故障ID集合
+            const currentFaultIds = new Set((data.faults || []).map(f => f.id));
+            
+            // 检测新故障（仅在非首次加载时）
+            if (previousFaultIds !== null) {
+                currentFaultIds.forEach(faultId => {
+                    if (!previousFaultIds.has(faultId)) {
+                        // 找到新故障
+                        const newFault = (data.faults || []).find(f => f.id === faultId);
+                        if (newFault) {
+                            // 只通知真正的新故障（pending状态），避免通知已派单的故障
+                            const faultStatus = newFault.status || 'pending';
+                            if (faultStatus === 'pending') {
+                                // 构建故障消息
+                                const faultTypeName = newFault.fault_type || '未知故障';
+                                const faultCode = newFault.fault_code || 'E00';
+                                const deviceId = newFault.device_id || '未知设备';
+                                const message = `发现新故障: ${faultTypeName} (${faultCode}) - ${deviceId}`;
+                                
+                                // 使用统一的系统事件发布函数
+                                if (typeof window.publishSystemEvent === 'function') {
+                                    window.publishSystemEvent(message, 'error');
+                                } else if (typeof window.addMessageToHistory === 'function') {
+                                    window.addMessageToHistory(message, 'fault');
+                                    // 显示Toast通知
+                                    if (typeof window.showToast === 'function') {
+                                        window.showToast(message, 'error');
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            } else {
+                // 首次加载，只记录基线
+                previousFaultIds = new Set(currentFaultIds);
+            }
+            
+            // 更新上一次的故障ID集合
+            previousFaultIds = new Set(currentFaultIds);
+            
+            // 存储原始数据到全局变量
+            globalFaultData = data.faults || [];
+            allFaults = globalFaultData;  // 保持向后兼容
+            
+            // 更新设备过滤器选项（基于所有数据）
+            updateDeviceFilter(globalFaultData);
+            
+            // 调用渲染函数（会应用客户端过滤，保持搜索和过滤状态）
+            renderFaultTable();
+            
+            // 确保表格在成功获取数据后刷新（如果有 DataTable 实例）
+            if (typeof faultTable !== 'undefined' && faultTable) {
+                try {
+                    faultTable.clear();
+                    faultTable.rows.add(globalFaultData);
+                    faultTable.draw();
+                    console.log('[loadFaults] DataTable 已刷新');
+                } catch (e) {
+                    console.log('[loadFaults] 使用手动渲染，非 DataTable');
+                }
+            }
+            
+            // 恢复滚动位置（仅在数据变化时，避免干扰用户手动滚动）
+            if (tableContainer && scrollTop > 0) {
+                // 使用 requestAnimationFrame 确保DOM已更新
+                requestAnimationFrame(() => {
+                    tableContainer.scrollTop = scrollTop;
+                });
+            }
+        } catch (error) {
+            console.error('Failed to load faults:', error);
+
+            // 关键修复：把异常明确展示出来（否则用户只看到“获取中”）
+            const tbody = document.getElementById('fault-table-body');
+            if (tbody) {
+                let msg = '获取故障日志失败';
+                if (error && (error.name === 'AbortError' || String(error).includes('AbortError'))) {
+                    msg = '获取故障日志超时（8秒），请检查服务器是否卡住/网络是否可达';
+                }
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-4">
+                            <div class="mb-2">
+                                <i class="bi bi-wifi-off"></i> ${escapeHtml(msg)}
+                            </div>
+                            <div class="small text-muted mb-2">建议打开浏览器 F12 → Network 查看 /api/faults 是否一直 Pending</div>
+                            <button class="btn btn-sm btn-light" onclick="refreshFaultTable()">重试</button>
+                        </td>
+                    </tr>
+                `;
+            }
+        } finally {
+            _faultsLoadingInFlight = false;
+        }
+    }
+
+    function updateDeviceFilter(faults) {
+        const deviceFilter = document.getElementById('device-filter');
+        const devices = [...new Set(faults.map(f => f.device_id))];
+        
+        // 安全：使用 DOM API 设置 option，避免 device_id 中包含特殊字符导致的注入问题
+        deviceFilter.innerHTML = '<option value="">所有设备</option>';
+        devices.forEach(device => {
+            const opt = document.createElement('option');
+            opt.value = String(device ?? '');
+            opt.textContent = String(device ?? '');
+            deviceFilter.appendChild(opt);
+        });
+    }
+
+    function renderFaultTable() {
+        // 获取当前搜索词
+        const searchInput = document.getElementById('fault-search');
+        const searchTerm = searchInput ? searchInput.value.trim().toLowerCase() : '';
+        
+        // 获取当前过滤器值
+        const statusFilter = document.getElementById('status-filter').value;
+        const deviceFilter = document.getElementById('device-filter').value;
+        
+        // 应用客户端过滤
+        const filtered = globalFaultData.filter(fault => {
+            // 搜索过滤：在 device_id, fault_type, fault_code, location 中搜索
+            let matchesSearch = true;
+            if (searchTerm) {
+                const searchStr = (
+                    (fault.device_id || '') + 
+                    (fault.fault_type || '') + 
+                    (fault.fault_code || '') + 
+                    (fault.location || '')
+                ).toLowerCase();
+                matchesSearch = searchStr.includes(searchTerm);
+            }
+            
+            // 状态过滤
+            let matchesStatus = true;
+            if (statusFilter) {
+                matchesStatus = fault.status === statusFilter;
+            }
+            
+            // 设备过滤
+            let matchesDevice = true;
+            if (deviceFilter) {
+                matchesDevice = fault.device_id === deviceFilter;
+            }
+            
+            return matchesSearch && matchesStatus && matchesDevice;
+        });
+
+        // ========== 关键改进：排序逻辑（未处理在前 -> 处理中 -> 已处理；同组按时间排序）==========
+        // 说明：后端 /api/faults 默认是按时间倒序返回，但前端过滤后顺序可能被打乱，
+        // 因此这里统一做一次排序，保证展示规则稳定。
+        function normalizeStatus(st) {
+            const s = String(st || '').trim().toLowerCase();
+            if (s === 'fixed') return 'resolved';
+            if (s === 'resolved') return 'resolved';
+            if (s === 'processing') return 'processing';
+            if (s === 'pending') return 'pending';
+            return 'pending';
+        }
+
+        function statusRank(st) {
+            const s = normalizeStatus(st);
+            if (s === 'pending') return 0;      // 未处理
+            if (s === 'processing') return 1;   // 处理中
+            return 2;                           // 已处理（resolved）
+        }
+
+        function getFaultTimeMs(fault) {
+            // 优先使用 fault_time（后端已带 +08:00），否则用 time 字符串兜底
+            const ft = fault && fault.fault_time ? String(fault.fault_time) : '';
+            if (ft) {
+                const ms = Date.parse(ft);
+                if (!Number.isNaN(ms)) return ms;
+            }
+            const t = fault && fault.time ? String(fault.time) : '';
+            if (t) {
+                // time 是北京时间展示串：YYYY-MM-DD HH:MM:SS
+                const ms2 = Date.parse(t.replace(' ', 'T') + '+08:00');
+                if (!Number.isNaN(ms2)) return ms2;
+            }
+            return 0;
+        }
+
+        filtered.sort((a, b) => {
+            const ra = statusRank(a.status);
+            const rb = statusRank(b.status);
+            if (ra !== rb) return ra - rb;
+            // 同一状态内按时间排序：最新在前
+            return getFaultTimeMs(b) - getFaultTimeMs(a);
+        });
+        
+        const tbody = document.getElementById('fault-table-body');
+        
+        if (filtered.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted py-4">暂无故障记录</td></tr>';
+            return;
+        }
+
+        const html = filtered.map(fault => {
+            let statusDot, statusText;
+            if (fault.status === 'pending') {
+                statusDot = '<span style="color: #ef4444;">●</span>';
+                statusText = '待处理';
+            } else if (fault.status === 'processing') {
+                statusDot = '<span style="color: #3b82f6;">●</span>';
+                statusText = '处理中';
+            } else if (fault.status === 'resolved' || fault.status === 'fixed') {
+                statusDot = '<span style="color: #10b981;">●</span>';
+                statusText = '已解决';
+            } else {
+                statusDot = '<span style="color: #6b7280;">●</span>';
+                statusText = '未知';
+            }
+            
+            // 严重程度：后端已补充 severity；这里再做一次兜底推断，避免历史数据仍显示“未知”
+            const inferredSeverity = (() => {
+                const s = String(fault.severity || '').trim().toLowerCase();
+                if (s === 'severe' || s === 'major' || s === 'general') return s;
+                const code = String(fault.fault_code || '').trim();
+                const type = String(fault.fault_type || '');
+                if (code === 'E04' || code === 'E05' || type.includes('IGBT') || type.includes('开路') || type.includes('接地')) return 'severe';
+                if (code === 'E01' || code === 'E02' || type.includes('交流窜入') || type.includes('绝缘故障')) return 'major';
+                if (code === 'E03' || type.includes('电容')) return 'general';
+                return 'general';
+            })();
+
+            const severityClass = {
+                'severe': 'soft-danger',
+                'major': 'soft-warning',
+                'general': 'soft-primary'
+            }[inferredSeverity] || 'soft-primary';
+            
+            const severityText = {
+                'severe': '严重',
+                'major': '主要',
+                'general': '一般'
+            }[inferredSeverity] || '一般';
+            
+            // 后端 fault_time 已带 +08:00，前端仍强制按北京时间展示，确保一致
+            const faultTime = new Intl.DateTimeFormat('zh-CN', {
+                timeZone: 'Asia/Shanghai',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            }).format(new Date(fault.fault_time));
+            
+            return `
+                <tr>
+                    <td>${statusDot} ${statusText}</td>
+                    <td><span class="badge badge-${severityClass}">${severityText}</span></td>
+                    <td>
+                        <strong>${escapeHtml(fault.fault_type || '未知故障')}</strong>
+                        <br><small class="text-muted">${escapeHtml(fault.device_id || '')}</small>
+                    </td>
+                    <td>${escapeHtml(fault.location || fault.device_id || '')}</td>
+                    <td><small>${faultTime}</small></td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-primary" onclick="showDiagnosis(${fault.id})">
+                            <i class="bi bi-eye"></i> 详情/诊断
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary ms-1" onclick="jumpToFaultSnapshot(allFaults.find(f => f.id === ${fault.id}))" title="跳转到故障快照">
+                            <i class="bi bi-camera"></i> 快照
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+        
+        tbody.innerHTML = html;
+    }
+
+    async function showDiagnosis(faultId) {
+        const fault = allFaults.find(f => f.id === faultId);
+        if (!fault) return;
+        
+        currentFaultId = faultId;
+        currentFault = fault;
+        
+        // 填充故障详情
+        const faultTimeBj = new Intl.DateTimeFormat('zh-CN', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }).format(new Date(fault.fault_time));
+
+        const detailsHtml = `
+            <div class="mb-3">
+                <strong>设备ID:</strong><br>
+                <code class="text-danger">${escapeHtml(fault.device_id || '')}</code>
+            </div>
+            <div class="mb-3">
+                <strong>位置:</strong><br>
+                ${escapeHtml(fault.location || fault.device_id || '')}
+            </div>
+            <div class="mb-3">
+                <strong>故障时间:</strong><br>
+                ${faultTimeBj}
+            </div>
+            <div class="mb-3">
+                <strong>故障类型:</strong><br>
+                ${escapeHtml(fault.fault_type || '未知')}
+            </div>
+            <div class="mb-3">
+                <strong>状态:</strong><br>
+                <span class="badge badge-soft-${fault.status === 'pending' ? 'warning' : fault.status === 'processing' ? 'info' : (fault.status === 'resolved' || fault.status === 'fixed') ? 'success' : 'primary'}">
+                    ${fault.status === 'pending' ? '待处理' : fault.status === 'processing' ? '处理中' : (fault.status === 'resolved' || fault.status === 'fixed') ? '已解决' : '未知'}
+                </span>
+            </div>
+            <div>
+                <strong>AI推荐:</strong><br>
+                <small class="text-muted">${escapeHtml(fault.ai_recommendation || '暂无推荐')}</small>
+            </div>
+        `;
+        
+        document.getElementById('fault-details').innerHTML = detailsHtml;
+        
+        // 根据状态显示/隐藏按钮
+        const dispatchBtn = document.getElementById('dispatch-fault-btn');
+        const resolveBtn = document.getElementById('resolve-fault-btn');
+        const archivedBtn = document.getElementById('archived-btn');
+        
+        // 重置所有按钮显示状态
+        dispatchBtn.style.display = 'none';
+        resolveBtn.style.display = 'none';
+        archivedBtn.style.display = 'none';
+        
+        if (fault.status === 'pending') {
+            // 待处理：显示"确认派单"按钮
+            dispatchBtn.style.display = 'inline-block';
+        } else if (fault.status === 'processing') {
+            // 处理中：显示"维修完成"按钮
+            resolveBtn.style.display = 'inline-block';
+        } else if (fault.status === 'resolved' || fault.status === 'fixed') {
+            // 已解决：显示"已归档"按钮（禁用状态）
+            archivedBtn.style.display = 'inline-block';
+        }
+        
+        // 加载知识图谱
+        if (fault.fault_code) {
+            await loadKnowledgeGraph(fault.fault_code);
+        }
+        
+        // 显示模态框
+        const modalElement = document.getElementById('diagnosisModal');
+        const modal = new bootstrap.Modal(modalElement);
+        
+        // 等待模态框完全显示后调整图表大小
+        modalElement.addEventListener('shown.bs.modal', function handler() {
+            if (diagnosisChart) {
+                setTimeout(() => {
+                    diagnosisChart.resize();
+                }, 200);
+            }
+            modalElement.removeEventListener('shown.bs.modal', handler);
+        });
+        
+        modal.show();
+    }
+
+    async function loadKnowledgeGraph(faultCode) {
+        try {
+            const response = await fetch(`/api/knowledge_graph/${faultCode}`);
+            const data = await response.json();
+            
+            // 保存原始数据用于重置
+            originalGraphData = JSON.parse(JSON.stringify(data));
+            expandedNodes.clear();  // 重置已展开节点记录
+            
+            if (!diagnosisChart) {
+                diagnosisChart = echarts.init(document.getElementById('diagnosis-graph'));
+            }
+            
+            // 更新图表配置
+            updateGraphOption(data);
+            
+            // 图表调整大小
+            diagnosisChart.resize();
+            
+            // ========== 强制绑定点击事件（在图表更新后） ==========
+            // 1. 先解绑所有现有的事件监听器，防止重复绑定
+            diagnosisChart.off('click');
+            
+            // 2. 绑定点击事件监听器（支持展开/收回切换）
+            diagnosisChart.on('click', async function(params) {
+                console.log("🔥 Graph Node Clicked:", params);
+                console.log("🔥 dataType:", params.dataType);
+                console.log("🔥 params.data:", params.data);
+                console.log("🔥 params.name:", params.name);
+                
+                if (params.dataType === 'node') {
+                    const nodeName = params.data.name || params.name;
+                    const nodeId = params.data.id || nodeName;
+                    console.log(`🖱️ Clicked: ${nodeName}, LogID: ${currentFaultId}`);
+                    
+                    // 防止展开参数节点（已经是二级节点）
+                    if (params.data.category === 3 || params.data.category === 'parameter') {
+                        console.log("⚠️ 跳过参数节点（已经是二级节点）");
+                        return;
+                    }
+                    
+                    // 检查节点是否已展开
+                    const isExpanded = expandedNodes.has(nodeId) || expandedNodes.has(nodeName);
+                    
+                    if (isExpanded) {
+                        // 如果已展开，则收回子节点
+                        console.log(`🔄 节点 ${nodeName} 已展开，执行收回操作`);
+                        await collapseNode(nodeId, nodeName);
+                        return;
+                    }
+                    
+                    // 检查是否有当前故障ID
+                    if (!currentFaultId) {
+                        console.error("❌ 错误: currentFaultId 未设置");
+                        alert("错误：无法获取故障ID，请刷新页面重试");
+                        return;
+                    }
+                    
+                    // 确保节点名称正确编码（使用 encodeURIComponent 一次）
+                    const encodedNodeName = encodeURIComponent(nodeName);
+                    const url = `/api/graph/details/${currentFaultId}/${encodedNodeName}`;
+                    console.log(`📡 Fetch URL: ${url}`);
+                    console.log(`📡 Node Name (原始): ${nodeName}`);
+                    console.log(`📡 Node Name (编码): ${encodedNodeName}`);
+                    
+                    try {
+                        const response = await fetch(url);
+                        
+                        if (!response.ok) {
+                            console.error(`❌ Fetch 失败: ${response.status} ${response.statusText}`);
+                            const errorText = await response.text();
+                            console.error(`错误详情: ${errorText}`);
+                            return;
+                        }
+                        
+                        const data = await response.json();
+                        console.log("📦 Response:", data);
+                        
+                        if (data.children && data.children.length > 0) {
+                            console.log(`✅ 收到 ${data.children.length} 个子节点`);
+                            await expandNodeWithData(params.data, data.children);
+                        } else {
+                            console.warn("⚠️ No children data found for this node.");
+                        }
+                    } catch (err) {
+                        console.error("❌ Fetch Error:", err);
+                    }
+                } else {
+                    console.log("⚠️ 点击的不是节点，dataType:", params.dataType);
+                }
+            });
+            
+            console.log("✅ 知识图谱点击事件已绑定");
+        } catch (error) {
+            console.error('Failed to load knowledge graph:', error);
+        }
+    }
+
+    function updateGraphOption(data) {
+        // 更新图例，包含新的类别
+        const categories = [
+            { name: '故障', itemStyle: { color: '#ef4444' } },
+            { name: '根本原因', itemStyle: { color: '#f59e0b' } },
+            { name: '解决方案', itemStyle: { color: '#10b981' } },
+            { name: '参数', itemStyle: { color: '#93c5fd' } }  // 浅蓝色用于二级节点
+        ];
+        
+        diagnosisChart.setOption({
+            backgroundColor: 'transparent',
+            title: {
+                text: '故障诊断知识图谱',
+                left: 'center',
+                top: 10,
+                textStyle: { 
+                    fontSize: 18, 
+                    fontWeight: 'bold',
+                    color: '#1f2937'  // 深色文字，白色背景下可见
+                }
+            },
+            tooltip: {
+                trigger: 'item',
+                backgroundColor: '#ffffff',
+                borderColor: '#dee2e6',
+                borderWidth: 1,
+                textStyle: {
+                    color: '#1f2937'  // 深色文字，白色背景下可见
+                },
+                formatter: function(params) {
+                    if (params.dataType === 'node') {
+                        let tooltip = `<b>${params.data.name}</b>`;
+                        if (params.data.value) {
+                            tooltip += `<br/>${params.data.value}`;
+                        }
+                        if (params.data.description) {
+                            tooltip += `<br/><small>${params.data.description}</small>`;
+                        }
+                        return tooltip;
+                    }
+                    return '';
+                }
+            },
+            legend: {
+                data: ['故障', '根本原因', '解决方案', '参数'],
+                orient: 'vertical',  // 垂直布局
+                right: 10,  // 放在右侧
+                top: 60,  // 距离顶部60px
+                itemGap: 12,  // 图例项间距
+                textStyle: {
+                    fontSize: 12,
+                    color: '#1f2937'  // 深色文字，白色背景下可见
+                }
+            },
+            series: [{
+                type: 'graph',
+                layout: 'force',
+                force: {
+                    repulsion: 2000,
+                    edgeLength: [100, 200],
+                    gravity: 0.1,
+                    layoutAnimation: true
+                },
+                roam: true,
+                draggable: true,
+                label: {
+                    show: true,
+                    position: 'right',
+                    fontSize: function(params) {
+                        // 二级节点使用较小字体
+                        return params.data.category === 3 ? 11 : 14;
+                    },
+                    fontWeight: 'bold',
+                    formatter: '{b}',
+                    color: '#1f2937'  // 深色文字，白色背景下可见
+                },
+                edgeSymbol: ['none', 'arrow'],
+                edgeSymbolSize: [0, 10],
+                categories: categories,
+                lineStyle: {
+                    color: 'source',
+                    curveness: 0.3,
+                    width: 2
+                },
+                emphasis: {
+                    focus: 'adjacency',
+                    lineStyle: { width: 4 }
+                },
+                data: data.nodes || [],
+                links: data.links || []
+            }]
+        });
+    }
+
+    async function expandNodeWithData(nodeData, childrenData) {
+        const nodeName = nodeData.name;
+        const nodeId = nodeData.id || nodeName;
+        
+        console.log(`[expandNodeWithData] 🔥 开始展开节点: ${nodeName} (ID: ${nodeId})`);
+        console.log(`[expandNodeWithData] 收到 ${childrenData.length} 个子节点数据`);
+        
+        // 检查节点是否已展开
+        if (expandedNodes.has(nodeId) || expandedNodes.has(nodeName)) {
+            console.log(`[expandNodeWithData] ⚠️ 节点 ${nodeName} 已展开，跳过`);
+            return;
+        }
+        
+        try {
+            // 获取当前图表数据
+            const currentOption = diagnosisChart.getOption();
+            const currentNodes = currentOption.series[0].data || [];
+            const currentLinks = currentOption.series[0].links || [];
+            
+            console.log(`[expandNodeWithData] 当前图表节点数: ${currentNodes.length}, 链接数: ${currentLinks.length}`);
+            
+            // 检查是否已存在相同的子节点（避免重复添加）
+            // 说明：以前用 name 去重，会迫使后端把二级节点 name 拼接成“父节点｜xxx”，
+            // 导致视觉上重复又冗长。这里改为按 id 去重，二级节点可以用短标题显示。
+            const existingNodeIds = new Set(currentNodes.map(n => n.id || n.name));
+            
+            // 获取父节点的位置（如果存在），用于定位子节点
+            const parentNode = currentNodes.find(n => (n.id === nodeId) || (n.name === nodeName));
+            const baseX = parentNode && parentNode.x !== undefined ? parentNode.x : 0;
+            const baseY = parentNode && parentNode.y !== undefined ? parentNode.y : 0;
+            
+            // 创建新节点和链接
+            const newNodes = [];
+            const newLinks = [];
+            
+            childrenData.forEach((child, index) => {
+                // 生成唯一的子节点ID
+                const childId = `${nodeId}_child_${index}`;
+
+                // 检查节点是否已存在（通过 ID 检查）
+                if (existingNodeIds.has(childId)) {
+                    console.log(`[expandNodeWithData] ⚠️ 子节点 ${childId} 已存在，跳过`);
+                    return;
+                }
+                
+                // 创建子节点（二级节点：较小，浅蓝色）
+                newNodes.push({
+                    id: childId,
+                    name: child.name,
+                    category: 3,  // 3=参数（浅蓝色）
+                    symbolSize: 30,  // 较小的节点
+                    value: child.description || '',
+                    description: child.description || '',
+                    // 给子节点一个随机但靠近父节点的位置，帮助力导向布局
+                    x: baseX + (Math.random() - 0.5) * 100,
+                    y: baseY + (Math.random() - 0.5) * 100,
+                    itemStyle: {
+                        color: '#0dcaf0'  // 浅蓝色
+                    },
+                    label: {
+                        show: true,
+                        position: 'right',
+                        fontSize: 10
+                    }
+                });
+                
+                // 创建从父节点到子节点的链接
+                newLinks.push({
+                    source: nodeId,  // 使用父节点ID或名称
+                    target: childId,  // 使用子节点ID
+                    value: '参数',
+                    lineStyle: {
+                        type: 'dashed',  // 虚线表示二级关系
+                        width: 1,
+                        color: '#0dcaf0',  // 浅蓝色
+                        curveness: 0.2  // 较小的弯曲度
+                    }
+                });
+            });
+            
+            if (newNodes.length === 0) {
+                console.log(`[expandNodeWithData] ⚠️ 所有子节点都已存在，无需添加`);
+                return;
+            }
+            
+            // 合并新节点和链接到现有数据
+            const updatedNodes = [...currentNodes, ...newNodes];
+            const updatedLinks = [...currentLinks, ...newLinks];
+            
+            console.log(`[expandNodeWithData] 📊 准备添加 ${newNodes.length} 个新节点和 ${newLinks.length} 个新链接`);
+            
+            // 更新图表（使用 setOption 合并数据，确保 roam: true）
+            diagnosisChart.setOption({
+                series: [{
+                    roam: true,  // 确保可以拖动和缩放
+                    data: updatedNodes,
+                    links: updatedLinks
+                }]
+            });
+            
+            // 标记节点已展开（使用ID和名称双重标记）
+            expandedNodes.add(nodeId);
+            expandedNodes.add(nodeName);
+            
+            console.log(`[expandNodeWithData] ✅ 成功展开节点 ${nodeName}，添加了 ${newNodes.length} 个子节点`);
+            
+        } catch (error) {
+            console.error('[expandNodeWithData] ❌ 展开节点失败:', error);
+            console.error('[expandNodeWithData] 错误堆栈:', error.stack);
+            alert(`展开节点失败: ${error.message}`);
+        }
+    }
+
+    // 收回节点函数（移除子节点）
+    async function collapseNode(nodeId, nodeName) {
+        try {
+            console.log(`[collapseNode] 🔄 开始收回节点: ${nodeName} (ID: ${nodeId})`);
+            
+            // 获取当前图表数据
+            const currentOption = diagnosisChart.getOption();
+            const currentNodes = currentOption.series[0].data || [];
+            const currentLinks = currentOption.series[0].links || [];
+            
+            // 找到所有以该节点为父节点的子节点ID
+            const childNodeIds = new Set();
+            currentLinks.forEach(link => {
+                // 检查链接的source是否是当前节点（可能是ID或名称）
+                const sourceId = typeof link.source === 'object' ? (link.source.id || link.source.name) : link.source;
+                const targetId = typeof link.target === 'object' ? (link.target.id || link.target.name) : link.target;
+                
+                if ((sourceId === nodeId || sourceId === nodeName) && 
+                    targetId && (targetId.includes('_child_') || currentNodes.find(n => (n.id || n.name) === targetId)?.category === 3)) {
+                    childNodeIds.add(targetId);
+                }
+            });
+            
+            console.log(`[collapseNode] 找到 ${childNodeIds.size} 个子节点需要移除`);
+            
+            if (childNodeIds.size === 0) {
+                console.log(`[collapseNode] ⚠️ 未找到子节点，可能已经收回`);
+                // 即使没找到子节点，也清除展开标记
+                expandedNodes.delete(nodeId);
+                expandedNodes.delete(nodeName);
+                return;
+            }
+            
+            // 移除所有相关的子节点和链接
+            const filteredNodes = currentNodes.filter(node => {
+                const nodeIdToCheck = node.id || node.name;
+                // 保留不是子节点的节点
+                return !childNodeIds.has(nodeIdToCheck);
+            });
+            
+            const filteredLinks = currentLinks.filter(link => {
+                const sourceId = typeof link.source === 'object' ? (link.source.id || link.source.name) : link.source;
+                const targetId = typeof link.target === 'object' ? (link.target.id || link.target.name) : link.target;
+                
+                // 移除以当前节点为source的链接，或者以子节点为source/target的链接
+                if ((sourceId === nodeId || sourceId === nodeName) && childNodeIds.has(targetId)) {
+                    return false;  // 移除父节点到子节点的链接
+                }
+                if (childNodeIds.has(sourceId) || childNodeIds.has(targetId)) {
+                    return false;  // 移除任何涉及子节点的链接
+                }
+                return true;
+            });
+            
+            // 更新图表
+            diagnosisChart.setOption({
+                series: [{
+                    data: filteredNodes,
+                    links: filteredLinks
+                }]
+            });
+            
+            // 清除展开标记
+            expandedNodes.delete(nodeId);
+            expandedNodes.delete(nodeName);
+            
+            console.log(`[collapseNode] ✅ 成功收回节点 ${nodeName}，移除了 ${childNodeIds.size} 个子节点`);
+            
+        } catch (error) {
+            console.error('[collapseNode] ❌ 收回节点失败:', error);
+            console.error('[collapseNode] 错误堆栈:', error.stack);
+            alert(`收回节点失败: ${error.message}`);
+        }
+    }
+
+    async function expandNode(nodeData) {
+        const nodeName = nodeData.name;
+        const nodeId = nodeData.id || nodeName;  // 使用名称作为ID的后备
+        
+        console.log(`[expandNode] 🔥 开始展开节点: ${nodeName} (ID: ${nodeId})`);
+        
+        // 检查节点是否已展开（使用ID和名称双重检查）
+        if (expandedNodes.has(nodeId) || expandedNodes.has(nodeName)) {
+            console.log(`[expandNode] ⚠️ 节点 ${nodeName} 已展开，跳过`);
+            return;
+        }
+        
+        // 检查是否有当前故障ID（必须传递以获取动态数据）
+        if (!currentFaultId) {
+            console.error(`[expandNode] ❌ 错误: currentFaultId 未设置，无法获取动态数据`);
+            alert("错误：无法获取故障ID，请刷新页面重试");
+            return;
+        }
+        
+        try {
+            // 获取节点的子节点数据（传递故障日志ID以获取动态数据）
+            const encodedNodeName = encodeURIComponent(nodeName);
+            const apiUrl = `/api/graph/details/${currentFaultId}/${encodedNodeName}`;
+            console.log(`[expandNode] 📡 请求API: ${apiUrl}`);
+            
+            const response = await fetch(apiUrl);
+            
+            if (!response.ok) {
+                console.error(`[expandNode] ❌ API请求失败: ${response.status} ${response.statusText}`);
+                const errorText = await response.text();
+                console.error(`[expandNode] 错误详情: ${errorText}`);
+                alert(`获取节点数据失败: ${response.status} ${response.statusText}`);
+                return;
+            }
+            
+            const details = await response.json();
+            console.log(`[expandNode] ✅ 收到API响应:`, details);
+            console.log(`[expandNode] 子节点数量:`, details.children ? details.children.length : 0);
+            
+            if (!details.children || details.children.length === 0) {
+                console.log(`[expandNode] ⚠️ 节点 ${nodeName} 没有子节点`);
+                return;
+            }
+            
+            // 获取当前图表数据
+            const currentOption = diagnosisChart.getOption();
+            const currentNodes = currentOption.series[0].data || [];
+            const currentLinks = currentOption.series[0].links || [];
+            
+            console.log(`[expandNode] 当前图表节点数: ${currentNodes.length}, 链接数: ${currentLinks.length}`);
+            
+            // 检查是否已存在相同的子节点（避免重复添加）
+            const existingNodeNames = new Set(currentNodes.map(n => n.name));
+            
+            // 获取父节点的位置（如果存在），用于定位子节点
+            const parentNode = currentNodes.find(n => (n.id === nodeId) || (n.name === nodeName));
+            const baseX = parentNode && parentNode.x !== undefined ? parentNode.x : 0;
+            const baseY = parentNode && parentNode.y !== undefined ? parentNode.y : 0;
+            
+            // 创建新节点和链接
+            const newNodes = [];
+            const newLinks = [];
+            
+            details.children.forEach((child, index) => {
+                // 检查节点是否已存在（通过名称检查）
+                if (existingNodeNames.has(child.name)) {
+                    console.log(`[expandNode] ⚠️ 子节点 ${child.name} 已存在，跳过`);
+                    return;  // 跳过已存在的节点
+                }
+                
+                // 生成唯一的子节点ID
+                const childId = `${nodeId}_child_${index}`;
+                
+                // 创建子节点（二级节点：较小，浅蓝色）
+                newNodes.push({
+                    id: childId,
+                    name: child.name,
+                    category: 3,  // 3=参数（浅蓝色）
+                    symbolSize: 30,  // 较小的节点
+                    value: child.description || '',
+                    description: child.description || '',
+                    // 给子节点一个随机但靠近父节点的位置，帮助力导向布局
+                    x: baseX + (Math.random() - 0.5) * 100,
+                    y: baseY + (Math.random() - 0.5) * 100,
+                    itemStyle: {
+                        color: '#0dcaf0'  // 浅蓝色
+                    },
+                    label: {
+                        show: true,
+                        position: 'right',
+                        fontSize: 10
+                    }
+                });
+                
+                // 创建从父节点到子节点的链接
+                newLinks.push({
+                    source: nodeId,  // 使用父节点ID或名称
+                    target: childId,  // 使用子节点ID
+                    value: '参数',
+                    lineStyle: {
+                        type: 'dashed',  // 虚线表示二级关系
+                        width: 1,
+                        color: '#0dcaf0',  // 浅蓝色
+                        curveness: 0.2  // 较小的弯曲度
+                    }
+                });
+            });
+            
+            if (newNodes.length === 0) {
+                console.log(`[expandNode] ⚠️ 所有子节点都已存在，无需添加`);
+                return;
+            }
+            
+            // 合并新节点和链接到现有数据
+            const updatedNodes = [...currentNodes, ...newNodes];
+            const updatedLinks = [...currentLinks, ...newLinks];
+            
+            console.log(`[expandNode] 📊 准备添加 ${newNodes.length} 个新节点和 ${newLinks.length} 个新链接`);
+            
+            // 更新图表（使用 setOption 合并数据）
+            diagnosisChart.setOption({
+                series: [{
+                    data: updatedNodes,
+                    links: updatedLinks
+                }]
+            });
+            
+            // 标记节点已展开（使用ID和名称双重标记）
+            expandedNodes.add(nodeId);
+            expandedNodes.add(nodeName);
+            
+            console.log(`[expandNode] ✅ 成功展开节点 ${nodeName}，添加了 ${newNodes.length} 个子节点`);
+            
+        } catch (error) {
+            console.error('[expandNode] ❌ 展开节点失败:', error);
+            console.error('[expandNode] 错误堆栈:', error.stack);
+            alert(`展开节点失败: ${error.message}`);
+        }
+    }
+
+    function resetKnowledgeGraph() {
+        if (originalGraphData && diagnosisChart) {
+            // 重置为原始数据
+            updateGraphOption(originalGraphData);
+            expandedNodes.clear();
+            console.log('知识图谱已重置为初始视图');
+        }
+    }
+
+    async function exportWorkOrder() {
+        if (!currentFaultId) {
+            alert('请先选择一个故障记录');
+            return;
+        }
+        
+        try {
+            // 1. 尝试捕获知识图谱图表图片
+            let graphImageBase64 = null;
+            
+            if (diagnosisChart) {
+                try {
+                    // 获取图表的Base64图片数据
+                    graphImageBase64 = diagnosisChart.getDataURL({
+                        type: 'png',
+                        pixelRatio: 2,
+                        backgroundColor: '#fff'
+                    });
+                    console.log('知识图谱图片已捕获');
+                } catch (chartError) {
+                    console.warn('无法捕获知识图谱图片:', chartError);
+                    // 继续执行，即使没有图片也能导出文档
+                }
+            } else {
+                console.warn('知识图谱图表未加载，将导出不含图表的文档');
+            }
+            
+            // 2. 发送POST请求，包含图表图片数据
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/workorder/export', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({
+                    log_id: currentFaultId,
+                    graph_image: graphImageBase64
+                })
+            });
+            
+            if (!response.ok) {
+                // 兼容：后端可能返回 HTML（例如登录失效被重定向），此时 response.json() 会抛错
+                let msg = '导出失败';
+                const ct = (response.headers.get('Content-Type') || '').toLowerCase();
+                if (ct.includes('application/json')) {
+                    const errorData = await response.json();
+                    msg = errorData.error || errorData.message || msg;
+                } else {
+                    const text = await response.text();
+                    if (text && text.toLowerCase().includes('<!doctype')) {
+                        msg = '登录状态可能已失效，请刷新页面后重新登录再导出';
+                    }
+                }
+                throw new Error(msg);
+            }
+            
+            // 3. 处理下载（POST请求需要手动处理）
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            
+            // 优先：使用“当前故障信息”本地生成中文文件名（最稳，不依赖响应头解析）
+            // 说明：部分浏览器/下载器对 Content-Disposition 的 filename*/中文解析并不一致，
+            // 本地生成可以确保最终下载名一定包含中文设备名称。
+            const deviceName = sanitizeFilename(currentFault?.device_id || '设备');
+            const faultTypeName = sanitizeFilename(currentFault?.fault_type || '故障');
+            const tsLocal = formatTsCompact(currentFault?.fault_time);
+            let filename = sanitizeFilename(`工单_${deviceName}_${faultTypeName}_ID${currentFaultId}_${tsLocal}.docx`) || '工单.docx';
+
+            // 次选：从响应头获取文件名（优先中文），用于后端自定义格式时覆盖本地名
+            // 说明：
+            // - filename*（RFC 5987）支持 UTF-8
+            // - X-EdgeWind-Filename 是后端提供的 URL 编码中文文件名（ASCII 安全），用于兼容部分环境
+            const encodedCnName = response.headers.get('X-EdgeWind-Filename');
+            const contentDisposition = response.headers.get('Content-Disposition');
+
+            if (encodedCnName) {
+                try {
+                    filename = sanitizeFilename(decodeURIComponent(encodedCnName)) || filename;
+                } catch (e) {
+                    console.warn('解析 X-EdgeWind-Filename 失败，将回退到 Content-Disposition:', e);
+                }
+            }
+
+            // 只在“没拿到中文名”的情况下再尝试解析 Content-Disposition（避免回退到 ASCII 文件名覆盖本地中文名）
+            if ((!filename || filename === '工单.docx') && contentDisposition) {
+                // 先解析 filename*（UTF-8''...）
+                const fnStar = contentDisposition.match(/filename\*\s*=\s*([^;]+)/i);
+                if (fnStar && fnStar[1]) {
+                    const v = fnStar[1].trim().replace(/^UTF-8''/i, '').replace(/^['"]|['"]$/g, '');
+                    try {
+                        filename = sanitizeFilename(decodeURIComponent(v)) || filename;
+                    } catch (e) {
+                        console.warn('解析 filename* 失败，将尝试解析 filename=:', e);
+                    }
+                }
+
+                // 再回退解析 filename=
+                // 注意：filename= 可能是 ASCII 回退名，这里只在确实没有中文名可用时才用它
+                if ((!filename || filename === '工单.docx')) {
+                    const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/i);
+                    if (filenameMatch && filenameMatch[1]) {
+                        const fallback = filenameMatch[1].replace(/['"]/g, '').trim();
+                        filename = sanitizeFilename(fallback) || filename;
+                    }
+                }
+            }
+            
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            
+            // 清理
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            
+            console.log('工单导出成功');
+        } catch (error) {
+            console.error('导出工单失败:', error);
+            alert('导出失败: ' + error.message);
+        }
+    }
+
+    async function dispatchFault(faultId) {
+        if (!faultId) {
+            alert('错误：无法获取故障ID');
+            return;
+        }
+        
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch(`/api/faults/${faultId}/dispatch`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                }
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok && data.success) {
+                // 更新按钮显示
+                const dispatchBtn = document.getElementById('dispatch-fault-btn');
+                const resolveBtn = document.getElementById('resolve-fault-btn');
+                dispatchBtn.style.display = 'none';
+                resolveBtn.style.display = 'inline-block';
+                
+                // 更新模态框中的状态显示
+                const statusBadge = document.querySelector('#fault-details .badge');
+                if (statusBadge) {
+                    statusBadge.className = 'badge badge-soft-info';
+                    statusBadge.textContent = '处理中';
+                }
+                
+                // 关闭模态框
+                const modal = bootstrap.Modal.getInstance(document.getElementById('diagnosisModal'));
+                modal.hide();
+                
+                // 重新加载故障列表以更新状态显示
+                await loadFaults();
+                
+                // 显示成功提示
+                alert('派单成功！故障状态已更新为"处理中"。');
+            } else {
+                alert(`派单失败：${data.error || '未知错误'}`);
+            }
+        } catch (error) {
+            console.error('派单请求失败:', error);
+            alert('派单失败：网络错误，请稍后重试。');
+        }
+    }
+
+    async function resolveFault(faultId) {
+        if (!faultId) {
+            alert('错误：无法获取故障ID');
+            return;
+        }
+        
+        if (!confirm('确认维修已完成？此操作将标记故障为"已解决"并重置设备状态为正常。')) {
+            return;
+        }
+        
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch(`/api/faults/${faultId}/resolve`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                }
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok && data.success) {
+                // 更新按钮显示
+                const resolveBtn = document.getElementById('resolve-fault-btn');
+                const archivedBtn = document.getElementById('archived-btn');
+                resolveBtn.style.display = 'none';
+                archivedBtn.style.display = 'inline-block';
+                
+                // 更新模态框中的状态显示
+                const statusBadge = document.querySelector('#fault-details .badge');
+                if (statusBadge) {
+                    statusBadge.className = 'badge badge-soft-success';
+                    statusBadge.textContent = '已解决';
+                }
+                
+                // 关闭模态框
+                const modal = bootstrap.Modal.getInstance(document.getElementById('diagnosisModal'));
+                modal.hide();
+                
+                // 重新加载故障列表以更新状态显示
+                await loadFaults();
+                
+                // 显示成功提示
+                alert('维修完成！故障已标记为"已解决"，复位指令已下发到设备。设备将在下次心跳时自动复位为正常状态。');
+            } else {
+                alert(`操作失败：${data.error || '未知错误'}`);
+            }
+        } catch (error) {
+            console.error('解决故障请求失败:', error);
+            alert('操作失败：网络错误，请稍后重试。');
+        }
+    }
+
+    // ========== 刷新表格函数 ==========
+    function refreshFaultTable() {
+        loadFaults();
+    }
+
+    // ========== 导出数据函数 ==========
+    function exportData() {
+        // 导出当前显示的故障数据（应用了过滤后的数据）
+        const filtered = globalFaultData.filter(fault => {
+            const searchInput = document.getElementById('fault-search');
+            const searchTerm = searchInput ? searchInput.value.trim().toLowerCase() : '';
+            const statusFilter = document.getElementById('status-filter').value;
+            const deviceFilter = document.getElementById('device-filter').value;
+            
+            let matchesSearch = true;
+            if (searchTerm) {
+                const searchStr = (
+                    (fault.device_id || '') + 
+                    (fault.fault_type || '') + 
+                    (fault.fault_code || '') + 
+                    (fault.location || '')
+                ).toLowerCase();
+                matchesSearch = searchStr.includes(searchTerm);
+            }
+            
+            const matchesStatus = !statusFilter || fault.status === statusFilter;
+            const matchesDevice = !deviceFilter || fault.device_id === deviceFilter;
+            
+            return matchesSearch && matchesStatus && matchesDevice;
+        });
+        
+        if (filtered.length === 0) {
+            alert('没有数据可导出');
+            return;
+        }
+        
+        // 生成CSV内容
+        let csvContent = '状态,严重程度,故障描述,机组,时间,故障代码\n';
+        filtered.forEach(fault => {
+            const status = fault.status === 'pending' ? '待处理' : 
+                          fault.status === 'processing' ? '处理中' : '已解决';
+            const sevRaw = String(fault.severity || '').trim().toLowerCase();
+            const severity = sevRaw === 'severe' ? '严重' :
+                            sevRaw === 'major' ? '主要' :
+                            sevRaw === 'general' ? '一般' : '一般';
+            const time = new Intl.DateTimeFormat('zh-CN', {
+                timeZone: 'Asia/Shanghai',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            }).format(new Date(fault.fault_time));
+            csvContent += `${status},${severity},"${fault.fault_type}",${fault.device_id},${time},${fault.fault_code || ''}\n`;
+        });
+        
+        // 下载CSV文件
+        // 1. Get current time (北京时间)
+        const now = new Date();
+        const nowBj = formatDateTimeForSnapshot(now); // YYYY-MM-DD HH:MM:SS
+        const dateStr = nowBj.split(' ')[0];
+        const timeStr = nowBj.split(' ')[1].replace(/:/g, '-'); // e.g., "14-30-05"
+        
+        // 2. Generate Filename with Timestamp
+        const filename = `故障日志_${dateStr}_${timeStr}.csv`;
+        
+        const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    // 搜索和过滤事件监听器
+    // 搜索框输入事件：立即触发客户端过滤
+    document.getElementById('fault-search').addEventListener('input', function(e) {
+        renderFaultTable();  // 重新渲染表格（应用搜索过滤）
+    });
+
+    // 状态过滤器变化事件：触发客户端过滤
+    document.getElementById('status-filter').addEventListener('change', function() {
+        renderFaultTable();  // 重新渲染表格（应用状态过滤）
+    });
+
+    // 设备过滤器变化事件：触发客户端过滤
+    document.getElementById('device-filter').addEventListener('change', function() {
+        renderFaultTable();  // 重新渲染表格（应用设备过滤）
+    });
+    document.getElementById('dispatch-fault-btn').addEventListener('click', function() {
+        if (currentFaultId) {
+            dispatchFault(currentFaultId);
+        }
+    });
+    document.getElementById('resolve-fault-btn').addEventListener('click', function() {
+        if (currentFaultId) {
+            resolveFault(currentFaultId);
+        }
+    });
+
+    // ========== 处理URL参数（从全局搜索跳转） ==========
+    function handleURLParams() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const searchQuery = urlParams.get('search');
+        
+        if (searchQuery) {
+            const searchInput = document.getElementById('fault-search');
+            if (searchInput) {
+                // 预填充搜索框
+                searchInput.value = searchQuery;
+                // 触发过滤（等待数据加载完成）
+                setTimeout(() => {
+                    renderFaultTable();
+                }, 500);
+                // 清除URL参数，避免刷新时重复搜索
+                window.history.replaceState({}, '', '/faults');
+            }
+        }
+    }
+
+    // 初始化
+    document.addEventListener('DOMContentLoaded', function() {
+        // 首次加载数据
+        loadFaults();
+        
+        // 处理URL参数（全局搜索跳转）
+        handleURLParams();
+        
+        // 定时刷新数据（但保持当前的过滤状态和滚动位置）
+        // 修复：使用2000ms轮询间隔，确保故障日志实时更新（降低服务器负载）
+        const pollingInterval = 2000;  // 2秒刷新一次，确保故障日志实时更新
+        
+        // 开始定时刷新（保持当前的过滤状态和滚动位置）
+        const refreshInterval = setInterval(loadFaults, pollingInterval);
+        
+        // 调试日志：确认轮询已启动
+        console.log(`[Faults页面] 故障日志自动刷新已启动，间隔: ${pollingInterval}ms`);
+        
+        // 响应式
+        window.addEventListener('resize', function() {
+            if (diagnosisChart) {
+                diagnosisChart.resize();
+            }
+        });
+    });
+</script>
+{% endblock %}
+

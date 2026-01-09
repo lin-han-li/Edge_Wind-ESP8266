@@ -10,33 +10,13 @@ extern "C" {
 #include <stdbool.h>
 
 /* ================= 用户配置区 ================= */
-/**
- * ⚠️ 注意（准备上传 GitHub 前必须做）：
- * - WiFi SSID/密码、服务器 IP 等属于“环境敏感信息”，不应硬编码进仓库。
- * - 请复制同目录下的 `esp8266_config.h.example` 为 `esp8266_config.h`（该文件已加入 .gitignore）。
- */
-#include "esp8266_config.h"
-
-/* 若未提供本地配置，则使用占位默认值（便于编译通过，但实际无法联网） */
-#ifndef WIFI_SSID
-#define WIFI_SSID       "YOUR_WIFI_SSID"
-#endif
-#ifndef WIFI_PASSWORD
-#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
-#endif
-#ifndef SERVER_IP
-#define SERVER_IP       "192.168.1.100"
-#endif
-#ifndef SERVER_PORT
+#define WIFI_SSID       "IQOO11"
+#define WIFI_PASSWORD   "12345688"
+#define SERVER_IP       "192.168.118.147"
 #define SERVER_PORT     5000
-#endif
 
-#ifndef NODE_ID
 #define NODE_ID         "STM32_H7_Node"
-#endif
-#ifndef NODE_LOCATION
 #define NODE_LOCATION   "Lab_Test"
-#endif
 
 // 数据参数
 #define WAVEFORM_POINTS 1024       // 采集点数

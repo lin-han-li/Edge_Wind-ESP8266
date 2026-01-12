@@ -159,7 +159,11 @@ function Pick-Port {
   # 默认：固定 5000（与硬件固件 SERVER_PORT=5000 保持一致，避免后端偷偷切到 5002 导致硬件 TIMEOUT）
   # 如需允许自动回退到 5002：
   #   $env:EDGEWIND_ALLOW_FALLBACK_PORT="true"
-  $allowFallback = ($env:EDGEWIND_ALLOW_FALLBACK_PORT -or '').Trim().ToLowerInvariant() -eq 'true'
+  # 注意：PowerShell 的逻辑运算符 `-or` 返回的是 [bool]，不能用来做“空字符串回退”。
+  # 这里用兼容 Windows PowerShell 5.1 的方式安全读取环境变量。
+  $fallbackRaw = $env:EDGEWIND_ALLOW_FALLBACK_PORT
+  if ($null -eq $fallbackRaw) { $fallbackRaw = '' }
+  $allowFallback = ($fallbackRaw.ToString().Trim().ToLowerInvariant() -eq 'true')
 
   if ((Get-ListeningPids 5000).Count -eq 0) { return 5000 }
 

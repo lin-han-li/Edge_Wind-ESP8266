@@ -48,6 +48,14 @@ extern "C" {
 #define ESP_LOG_UART_PORT 1
 #endif
 
+/* ================= 串口命令（故障注入）=================
+ * 连接到调试串口（默认 USART1）后，直接输入：E00 / E01 / E02 ... 回车即可切换上报故障码
+ * - 目的：联调时方便通过串口快速模拟故障
+ */
+#ifndef ESP_CONSOLE_ENABLE
+#define ESP_CONSOLE_ENABLE 1
+#endif
+
 // 数据参数
 #define WAVEFORM_POINTS 1024       // 采集点数
 #define WAVEFORM_SEND_STEP 4       // ⚠️改为4 (发256点)，因为4个通道数据量太大，必须降采样防溢出
@@ -74,6 +82,8 @@ void ESP_Init(void);
 void ESP_Update_Data_And_FFT(void);
 void ESP_Post_Data(void);
 void ESP_Register(void);
+void ESP_Console_Init(void);
+void ESP_Console_Poll(void);
 
 #ifdef __cplusplus
 }

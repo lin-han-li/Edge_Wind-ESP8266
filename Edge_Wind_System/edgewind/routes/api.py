@@ -405,9 +405,15 @@ def upload_data():
             pass
 
         # 5) 命令下发（维修完成 -> reset）
+        # 重要：不要 pop！否则设备若“没及时解析响应”，命令会丢失。
+        # 策略：命令会在设备上报 fault_code=E00 后自动清除（视为已执行）。
         resp = {'success': True}
-        if device_id in node_commands:
-            resp['command'] = node_commands.pop(device_id)
+        cmd = node_commands.get(device_id)
+        if cmd:
+            resp['command'] = cmd
+            # ack：设备已恢复正常，则认为 reset 已执行
+            if cmd == 'reset' and (fault_code == 'E00'):
+                node_commands.pop(device_id, None)
         return jsonify(resp), 200
 
     except Exception as e:
@@ -621,8 +627,12 @@ def node_heartbeat():
             'node_id': node_id, 
             'timestamp': current_timestamp
         }
-        if node_id in node_commands:
-            response_payload['command'] = node_commands.pop(node_id)
+        # 命令下发（不要 pop，避免命令丢失；fault_code=E00 时视为已执行并清除）
+        cmd = node_commands.get(node_id)
+        if cmd:
+            response_payload['command'] = cmd
+            if cmd == 'reset' and fault_code == 'E00':
+                node_commands.pop(node_id, None)
         
         # 9. 节流更新数据库设备心跳（避免 50Hz 高频心跳把 SQLite 打爆）
         last_db = _last_db_heartbeat_ts.get(node_id, 0)

@@ -108,6 +108,9 @@ int main(void)
 
   printf("System Start...\r\n");
 
+  // 启动调试串口命令接收（USART1 RX 中断）：输入 E01/E00 回车切换上报故障码
+  ESP_Console_Init();
+
   ESP_Init(); // 这会阻塞几秒钟进行连接
 
   /* USER CODE END 2 */
@@ -117,6 +120,9 @@ int main(void)
   while (1)
   {
     // 在 main while(1) 中：
+
+    // 0. 串口控制台（在调试串口输入 E01 回车即可切换故障码）
+    ESP_Console_Poll();
 
     // 1. 全速计算 (保证数据实时性)
     ESP_Update_Data_And_FFT();

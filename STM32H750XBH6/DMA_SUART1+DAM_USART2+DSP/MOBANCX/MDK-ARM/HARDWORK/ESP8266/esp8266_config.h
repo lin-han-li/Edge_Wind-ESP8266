@@ -11,7 +11,7 @@
 #define SERVER_PORT     5000
 
 /* 节点信息 */
-#define NODE_ID         "STM32_H7_Node"
+#define NODE_ID         "STM32_H7_智能测试节点"
 #define NODE_LOCATION   "Lab_Test"
 
 #endif /* __ESP8266_CONFIG_H */

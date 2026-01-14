@@ -32,6 +32,35 @@ static void ESP_Exit_Transparent_Mode(void);
 static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, float noise_level);
 static UART_HandleTypeDef* ESP_GetLogUart(void);
 static void ESP_Log_RxBuf(const char *tag);
+static void ESP_SetFaultCode(const char *code);
+static void ESP_Console_HandleLine(char *line);
+static void StrTrimInPlace(char *s);
+static void ESP_StreamRx_Start(void);
+static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len);
+
+// 当前上报的故障码（默认正常 E00）
+static char g_fault_code[4] = "E00";
+
+// ---------- 串口控制台（调试串口 RX 中断） ----------
+static uint8_t g_console_rx_byte = 0;
+static volatile uint8_t g_console_line_ready = 0;
+static char g_console_line[32];
+static volatile uint8_t g_console_line_len = 0;
+
+// ---------- 服务器下发命令（从 USART2 收到的 HTTP 响应中提取） ----------
+static volatile uint8_t g_server_reset_pending = 0;
+static uint8_t g_stream_rx_buf[1024];
+static char g_stream_window[256];
+static uint16_t g_stream_window_len = 0;
+static volatile uint32_t g_usart2_rx_events = 0;
+static volatile uint32_t g_usart2_rx_bytes = 0;
+static volatile uint8_t g_usart2_rx_started = 0;
+static volatile uint32_t g_usart2_rx_restart = 0;
+static volatile uint32_t g_uart2_err = 0;
+static volatile uint32_t g_uart2_err_ore = 0;
+static volatile uint32_t g_uart2_err_fe = 0;
+static volatile uint32_t g_uart2_err_ne = 0;
+static volatile uint32_t g_uart2_err_pe = 0;
 
 static UART_HandleTypeDef* ESP_GetLogUart(void) {
 #if (ESP_LOG_UART_PORT == 1)
@@ -124,6 +153,9 @@ void ESP_Init(void) {
     g_esp_ready = 1;
     ESP_Log("[ESP] 系统就绪（4通道），开始上报数据。\r\n");
 
+    // 启动 USART2 接收（DMA + IDLE），用于接收 /api/node/heartbeat 的响应中的 command/reset
+    ESP_StreamRx_Start();
+
     /* === 初始化 4 个通道的元数据 (与 api.py 逻辑严格对应) === */
     
     // Channel 0: 直流母线(+) -> api.py 识别 "直流" 且无 "负/-" -> voltage
@@ -211,6 +243,125 @@ void ESP_Update_Data_And_FFT(void) {
     Process_Channel_Data(3, 20.0f, 5.0f, 2.0f); 
 }
 
+static void StrTrimInPlace(char *s) {
+    if (!s) return;
+    // trim left
+    char *p = s;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (p != s) memmove(s, p, strlen(p) + 1);
+    // trim right
+    size_t n = strlen(s);
+    while (n > 0) {
+        char c = s[n - 1];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            s[n - 1] = 0;
+            n--;
+        } else {
+            break;
+        }
+    }
+}
+
+static void ESP_SetFaultCode(const char *code) {
+    if (!code) return;
+    // 允许输入 e01 / E01
+    char c0 = code[0];
+    char c1 = code[1];
+    char c2 = code[2];
+    if (c0 == 'e') c0 = 'E';
+    if (c0 != 'E') return;
+    if (c1 < '0' || c1 > '9') return;
+    if (c2 < '0' || c2 > '9') return;
+    g_fault_code[0] = 'E';
+    g_fault_code[1] = c1;
+    g_fault_code[2] = c2;
+    g_fault_code[3] = 0;
+    ESP_Log("[控制台] 故障码已切换为: %s（下一次上报生效）\r\n", g_fault_code);
+}
+
+static void ESP_Console_HandleLine(char *line) {
+    if (!line) return;
+    StrTrimInPlace(line);
+    if (line[0] == 0) return;
+
+    if (strcmp(line, "help") == 0 || strcmp(line, "?") == 0) {
+        ESP_Log("[控制台] 可用命令：\r\n");
+        ESP_Log("  - E00/E01/E02... ：切换上报故障码\r\n");
+        ESP_Log("  - help 或 ?      ：显示帮助\r\n");
+        return;
+    }
+
+    // 直接输入 E01
+    if ((line[0] == 'E' || line[0] == 'e') && strlen(line) == 3) {
+        ESP_SetFaultCode(line);
+        return;
+    }
+
+    // 兼容输入：fault E01
+    if (strncmp(line, "fault", 5) == 0) {
+        char *p = line + 5;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strlen(p) == 3 && (p[0] == 'E' || p[0] == 'e')) {
+            ESP_SetFaultCode(p);
+            return;
+        }
+    }
+
+    ESP_Log("[控制台] 未识别命令: %s（输入 help 查看帮助）\r\n", line);
+}
+
+void ESP_Console_Init(void) {
+#if (ESP_CONSOLE_ENABLE)
+    UART_HandleTypeDef *hu = ESP_GetLogUart(); // 默认 USART1
+    if (!hu) return;
+
+    // 启动 1 字节 RX 中断（比主循环轮询稳定，不会“输入了但没反应”）
+    HAL_UART_Receive_IT(hu, &g_console_rx_byte, 1);
+    ESP_Log("[控制台] 已启用：输入 E01 回车注入故障；输入 E00 回车清除。\r\n");
+#endif
+}
+
+void ESP_Console_Poll(void) {
+#if (ESP_CONSOLE_ENABLE)
+    // 1) 处理“已收到的一整行”
+    if (g_console_line_ready) {
+        g_console_line_ready = 0;
+        g_console_line[g_console_line_len] = 0;
+        ESP_Console_HandleLine(g_console_line);
+        g_console_line_len = 0;
+    }
+
+    // 2) 处理“服务器下发 reset”
+    if (g_server_reset_pending) {
+        g_server_reset_pending = 0;
+        ESP_Log("[服务器命令] 收到 reset：清除故障码 -> E00\r\n");
+        ESP_SetFaultCode("E00");
+    }
+
+#if (ESP_DEBUG)
+    // 3) 调试：确认 USART2 是否收到服务器响应（每 1 秒输出一次统计）
+    static uint32_t last_dbg = 0;
+    uint32_t now = HAL_GetTick();
+    if ((now - last_dbg) >= 1000) {
+        last_dbg = now;
+        ESP_Log("[调试] USART2 RX: started=%d, events=%lu, bytes=%lu, restart=%lu\r\n",
+                (int)g_usart2_rx_started,
+                (unsigned long)g_usart2_rx_events,
+                (unsigned long)g_usart2_rx_bytes,
+                (unsigned long)g_usart2_rx_restart);
+        ESP_Log("[调试] USART2 ERR: total=%lu, ORE=%lu, FE=%lu, NE=%lu, PE=%lu\r\n",
+                (unsigned long)g_uart2_err,
+                (unsigned long)g_uart2_err_ore,
+                (unsigned long)g_uart2_err_fe,
+                (unsigned long)g_uart2_err_ne,
+                (unsigned long)g_uart2_err_pe);
+    }
+#endif
+#else
+    (void)0;
+#endif
+}
+
 void ESP_Post_Data(void) {
     if (g_esp_ready == 0) return;
     
@@ -226,7 +377,7 @@ void ESP_Post_Data(void) {
     uint32_t total_len;
     
     // JSON Header
-    p += sprintf(p, "{\"node_id\": \"%s\",\"status\": \"online\",\"fault_code\": \"E00\",\"channels\": [", NODE_ID);
+    p += sprintf(p, "{\"node_id\": \"%s\",\"status\": \"online\",\"fault_code\": \"%s\",\"channels\": [", NODE_ID, g_fault_code);
     
     // 循环发送 4 个通道的数据
     for(int i=0; i<4; i++) {
@@ -276,8 +427,141 @@ void ESP_Post_Data(void) {
     memmove(http_packet_buf + header_len, http_packet_buf + header_reserve_len, body_len);
     total_len = (uint32_t)header_len + body_len;
     
-    if(HAL_UART_GetState(&huart2) == HAL_UART_STATE_READY) {
+    // 重要：不要用 HAL_UART_GetState()（它会把 RX 忙也算进去，导致开启 RX DMA 后 TX 永远发不出去）
+    // 这里只检查发送状态 gState，允许 TX/RX 同时工作（全双工）
+    if (huart2.gState == HAL_UART_STATE_READY) {
         HAL_UART_Transmit_DMA(&huart2, (uint8_t *)http_packet_buf, (uint16_t)total_len);
+    }
+}
+
+// ---------------- 串口 RX 回调：调试串口输入 E01/E00 注入/清除故障 ----------------
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+#if (ESP_CONSOLE_ENABLE)
+    UART_HandleTypeDef *hu = ESP_GetLogUart();
+    if (huart == hu) {
+        // 若上一条命令还未被主循环处理，为避免覆盖缓冲区，先丢弃后续输入
+        if (g_console_line_ready) {
+            HAL_UART_Receive_IT(hu, &g_console_rx_byte, 1);
+            return;
+        }
+
+        uint8_t ch = g_console_rx_byte;
+        if (ch == '\r' || ch == '\n') {
+            if (g_console_line_len > 0) {
+                g_console_line_ready = 1;
+            }
+        } else {
+            if (g_console_line_len < (sizeof(g_console_line) - 1)) {
+                g_console_line[g_console_line_len++] = (char)ch;
+            } else {
+                g_console_line_len = 0;
+            }
+        }
+        HAL_UART_Receive_IT(hu, &g_console_rx_byte, 1);
+        return;
+    }
+#endif
+    (void)huart;
+}
+
+// ---------------- USART2 流式接收：解析后端 /api/node/heartbeat 响应里的 command=reset ----------------
+static void ESP_StreamRx_Start(void) {
+    memset(g_stream_rx_buf, 0, sizeof(g_stream_rx_buf));
+    memset(g_stream_window, 0, sizeof(g_stream_window));
+    g_stream_window_len = 0;
+
+    // 确保 RX 状态干净（避免因为之前的阻塞接收/异常导致启动失败）
+    (void)HAL_UART_AbortReceive(&huart2);
+
+    HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
+    if (st == HAL_OK) {
+        g_usart2_rx_started = 1;
+        g_usart2_rx_restart++;
+        if (huart2.hdmarx) {
+            __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+        }
+        ESP_Log("[ESP] 已开启 USART2 RX(DMA+IDLE)：用于接收服务器下发命令\r\n");
+    } else {
+        g_usart2_rx_started = 0;
+        ESP_Log("[ESP] 开启 USART2 RX(DMA+IDLE) 失败，status=%d（将无法接收 reset 命令）\r\n", (int)st);
+    }
+}
+
+static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len) {
+    if (!data || len == 0) return;
+    g_usart2_rx_bytes += len;
+
+    // 滑动窗口（按“块”处理，避免在中断里对每个字节 memmove 导致卡死/溢出）
+    const uint16_t cap = (uint16_t)(sizeof(g_stream_window) - 1);
+    if (len >= cap) {
+        memcpy(g_stream_window, data + (len - cap), cap);
+        g_stream_window[cap] = 0;
+        g_stream_window_len = cap;
+    } else {
+        uint16_t new_len = (uint16_t)(g_stream_window_len + len);
+        if (new_len > cap) {
+            uint16_t drop = (uint16_t)(new_len - cap);
+            if (drop >= g_stream_window_len) {
+                g_stream_window_len = 0;
+            } else {
+                memmove(g_stream_window, g_stream_window + drop, g_stream_window_len - drop);
+                g_stream_window_len = (uint16_t)(g_stream_window_len - drop);
+            }
+        }
+        memcpy(g_stream_window + g_stream_window_len, data, len);
+        g_stream_window_len = (uint16_t)(g_stream_window_len + len);
+        g_stream_window[g_stream_window_len] = 0;
+    }
+
+    // 识别 JSON：{"command":"reset"}（也允许出现 reset 关键字）
+    if (strstr(g_stream_window, "\"command\"") && strstr(g_stream_window, "reset")) {
+        g_server_reset_pending = 1;
+    }
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+    if (huart == &huart2) {
+        g_usart2_rx_events++;
+        if (Size > 0 && Size <= sizeof(g_stream_rx_buf)) {
+            ESP_StreamRx_Feed(g_stream_rx_buf, Size);
+        }
+        // 重新启动 RX（若异常，先 Abort 再重启）
+        HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
+        if (st != HAL_OK) {
+            (void)HAL_UART_AbortReceive(&huart2);
+            st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
+        }
+        if (st == HAL_OK) {
+            g_usart2_rx_started = 1;
+            if (huart2.hdmarx) {
+                __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+            }
+        } else {
+            g_usart2_rx_started = 0;
+        }
+        return;
+    }
+}
+
+// USART2 错误回调：典型是 ORE（接收溢出）导致后续不再进 RxEventCallback
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+    if (huart == &huart2) {
+        g_uart2_err++;
+        uint32_t ec = huart->ErrorCode;
+        if (ec & HAL_UART_ERROR_ORE) g_uart2_err_ore++;
+        if (ec & HAL_UART_ERROR_FE)  g_uart2_err_fe++;
+        if (ec & HAL_UART_ERROR_NE)  g_uart2_err_ne++;
+        if (ec & HAL_UART_ERROR_PE)  g_uart2_err_pe++;
+
+        // 清错误并重启接收
+        ESP_Clear_Error_Flags();
+        (void)HAL_UART_AbortReceive(&huart2);
+        HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
+        g_usart2_rx_started = (st == HAL_OK) ? 1 : 0;
+        if (st == HAL_OK && huart2.hdmarx) {
+            __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+        }
+        return;
     }
 }
 

@@ -57,6 +57,12 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define ESP8266_RX_Pin GPIO_PIN_5
+#define ESP8266_RX_GPIO_Port GPIOD
+#define ESP8266_RST_Pin GPIO_PIN_4
+#define ESP8266_RST_GPIO_Port GPIOD
+#define ESP8266_TX_Pin GPIO_PIN_6
+#define ESP8266_TX_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

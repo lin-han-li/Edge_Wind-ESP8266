@@ -82,7 +82,7 @@
           </BeforeMake>
           <AfterMake>
             <RunUserProg1>0</RunUserProg1>
-            <RunUserProg2>0</RunUserProg2>
+            <RunUserProg2>1</RunUserProg2>
             <UserProg1Name></UserProg1Name>
             <UserProg2Name></UserProg2Name>
             <UserProg1Dos16Mode>0</UserProg1Dos16Mode>
@@ -278,7 +278,7 @@
               <OCR_RVCT4>
                 <Type>1</Type>
                 <StartAddress>0x8000000</StartAddress>
-                <Size>0x20000</Size>
+                <Size>0x200000</Size>
               </OCR_RVCT4>
               <OCR_RVCT5>
                 <Type>1</Type>
@@ -308,7 +308,7 @@
               <OCR_RVCT10>
                 <Type>0</Type>
                 <StartAddress>0x24000000</StartAddress>
-                <Size>0x80000</Size>
+                <Size>0x100000</Size>
               </OCR_RVCT10>
             </OnChipMemories>
             <RvctStartVector></RvctStartVector>
@@ -341,7 +341,7 @@
               <MiscControls>-Wno-invalid-source-encoding</MiscControls>
               <Define>USE_HAL_DRIVER,STM32H750xx,ARM_MATH_CM7,ARM_MATH_MATRIX_CHECK,ARM_MATH_ROUNDING,ARM_MATH_LOOPUNROLL,USE_PWR_LDO_SUPPLY</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32H7xx/Include;../Drivers/CMSIS/Include;.\HARDWORK;.\HARDWORK\CMSIS-DSP;.\HARDWORK\CMSIS-DSP\1.16.2;.\HARDWORK\CMSIS-DSP\1.16.2\Source;.\HARDWORK\CMSIS-DSP\1.16.2\Source\BasicMathFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\BayesFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\CommonTables;.\HARDWORK\CMSIS-DSP\1.16.2\Source\ComplexMathFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\ControllerFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\DistanceFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\FastMathFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\FilteringFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\InterpolationFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\MatrixFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\QuaternionMathFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\StatisticsFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\SupportFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\SVMFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\TransformFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\Source\WindowFunctions;.\HARDWORK\CMSIS-DSP\1.16.2\PrivateInclude;.\HARDWORK\CMSIS-DSP\1.16.2\Include;.\HARDWORK\ESP8266</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc;../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32H7xx/Include;../Drivers/CMSIS/Include;./HARDWORK;./HARDWORK/CMSIS-DSP;./HARDWORK/CMSIS-DSP/1.16.2;./HARDWORK/CMSIS-DSP/1.16.2/Source;./HARDWORK/CMSIS-DSP/1.16.2/Source/BasicMathFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/BayesFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/CommonTables;./HARDWORK/CMSIS-DSP/1.16.2/Source/ComplexMathFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/ControllerFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/DistanceFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/FastMathFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/FilteringFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/InterpolationFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/MatrixFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/QuaternionMathFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/StatisticsFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/SupportFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/SVMFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/TransformFunctions;./HARDWORK/CMSIS-DSP/1.16.2/Source/WindowFunctions;./HARDWORK/CMSIS-DSP/1.16.2/PrivateInclude;./HARDWORK/CMSIS-DSP/1.16.2/Include;./HARDWORK/ESP8266</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>

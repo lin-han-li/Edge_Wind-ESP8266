@@ -1161,8 +1161,15 @@
     let lastChannelCardStates = {};
     
     function renderChannelCards() {
+        // 兼容：页面顶部可能使用的是固定4卡片布局（card-voltage等），而不是 channelCardsRow 容器。
+        // 若容器不存在，直接跳过，避免报错导致整个前端更新循环中断（你看到的 innerHTML of null）。
+        const channelCardsRowEl = document.getElementById('channelCardsRow');
+        if (!channelCardsRowEl) {
+            return;
+        }
+
         if (!currentNodeId) {
-            document.getElementById('channelCardsRow').innerHTML = 
+            channelCardsRowEl.innerHTML = 
                 '<div class="col-12 text-center text-muted py-5">请先选择边缘节点</div>';
             return;
         }
@@ -1170,7 +1177,7 @@
         const node = NODE_CONFIGS[currentNodeId];
         if (!node) return;
         
-        const container = document.getElementById('channelCardsRow');
+        const container = channelCardsRowEl;
         const currentStates = {};
         // 安全：currentNodeId 可能来自外部数据，用于 DOM id 时必须净化
         const safeNodeIdForDom = sanitizeDomId(currentNodeId);

@@ -31,6 +31,9 @@ api_bp = Blueprint('api', __name__, url_prefix='/api')
 logger = logging.getLogger(__name__)
 _device_api_key_warned = False
 
+# 设备上报调试：限制心跳日志频率，避免刷屏
+_last_hb_log_ts = {}
+
 # 全局变量（将从app传入）
 active_nodes = {}  # 将在app.py中初始化并传入
 node_commands = {}  # 将在app.py中初始化并传入
@@ -244,6 +247,7 @@ def register_device():
         
         if not device_id:
             return jsonify({'error': 'Missing device_id'}), 400
+        logger.info(f"[/api/register] device_id={device_id}, location={location}, hw_version={hw_version}")
         
         # 检查设备是否已存在
         device = Device.query.filter_by(device_id=device_id).first()
@@ -441,8 +445,14 @@ def node_heartbeat():
         if not node_id:
             return jsonify({'error': 'Missing node_id'}), 400
 
-        # 1. Update Active Node
+        # 0. Update timestamp + Debug log (rate limited per node)
         current_timestamp = time.time()
+        last = _last_hb_log_ts.get(node_id, 0)
+        if current_timestamp - last >= 5:
+            _last_hb_log_ts[node_id] = current_timestamp
+            logger.info(f"[/api/node/heartbeat] node_id={node_id} fault={fault_code} ch={len(data.get('channels') or [])}")
+
+        # 1. Update Active Node
         # 1. Update Active Node（可选：轻量化存储，避免多节点时内存/序列化成本过高）
         if LIGHT_ACTIVE_NODES:
             data_light = dict(data)
@@ -483,7 +493,8 @@ def node_heartbeat():
             label = (ch.get('label') or '').strip()
             val = ch.get('value', ch.get('current_value', 0))
             wave = ch.get('waveform', [])
-            spec = ch.get('fft_spectrum', [])
+            # 统一字段名：优先 fft_spectrum；兼容历史设备的 fft
+            spec = ch.get('fft_spectrum', ch.get('fft', []))
 
             if not isinstance(wave, list):
                 wave = []

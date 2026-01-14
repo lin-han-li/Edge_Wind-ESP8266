@@ -30,6 +30,106 @@ try {
   # 忽略编码设置失败
 }
 
+# ---------------------------
+# UI 帮助函数（对齐/宽度自适应）
+# 说明：Windows 控制台里中文/部分符号可能按“2列宽”显示，直接用字符数居中会偏。
+# 这里用一个轻量的“显示宽度”估算，确保框线/标题在不同终端里更稳定对齐。
+# ---------------------------
+function Get-CharDisplayWidth([char]$c) {
+  $code = [int]$c
+  # 常见全角/中日韩/符号范围（近似 wcwidth）
+  if (
+    ($code -ge 0x1100 -and $code -le 0x115F) -or  # Hangul Jamo init
+    ($code -ge 0x2E80 -and $code -le 0xA4CF) -or  # CJK Radicals .. Yi
+    ($code -ge 0xAC00 -and $code -le 0xD7A3) -or  # Hangul Syllables
+    ($code -ge 0xF900 -and $code -le 0xFAFF) -or  # CJK Compatibility Ideographs
+    ($code -ge 0xFE10 -and $code -le 0xFE6F) -or  # Vertical/compat forms
+    ($code -ge 0xFF00 -and $code -le 0xFF60) -or  # Fullwidth forms
+    ($code -ge 0xFFE0 -and $code -le 0xFFE6)      # Fullwidth symbol variants
+  ) { return 2 }
+  return 1
+}
+
+function Get-DisplayWidth([string]$s) {
+  if ([string]::IsNullOrEmpty($s)) { return 0 }
+  $w = 0
+  foreach ($ch in $s.ToCharArray()) {
+    $w += (Get-CharDisplayWidth $ch)
+  }
+  return $w
+}
+
+function Truncate-ToWidth([string]$s, [int]$maxWidth) {
+  if ([string]::IsNullOrEmpty($s)) { return '' }
+  if ($maxWidth -le 0) { return '' }
+  $w = 0
+  $sb = New-Object System.Text.StringBuilder
+  foreach ($ch in $s.ToCharArray()) {
+    $cw = Get-CharDisplayWidth $ch
+    if (($w + $cw) -gt $maxWidth) { break }
+    [void]$sb.Append($ch)
+    $w += $cw
+  }
+  return $sb.ToString()
+}
+
+function Get-UiInnerWidth {
+  # 目标：不依赖固定字符数，按当前窗口宽度自适应；同时给一个上限避免框太宽。
+  $desired = 55
+  $min = 20
+  try {
+    $w = [Console]::WindowWidth
+    # 留出左右边框 2 列
+    $inner = [Math]::Min($desired, [Math]::Max($min, $w - 2))
+    return [int]$inner
+  } catch {
+    return $desired
+  }
+}
+
+function Get-UiChars {
+  # 如遇到某些终端/字体对框线字符兼容性差，可设置：
+  #   set EDGEWIND_ASCII_UI=true
+  $asciiRaw = $env:EDGEWIND_ASCII_UI
+  if ($null -eq $asciiRaw) { $asciiRaw = '' }
+  $useAscii = ($asciiRaw.ToString().Trim().ToLowerInvariant() -eq 'true')
+
+  if ($useAscii) {
+    return @{
+      TL = '+'
+      TR = '+'
+      BL = '+'
+      BR = '+'
+      H  = '-'
+      V  = '|'
+      SEP = '-'
+    }
+  }
+
+  return @{
+    TL = '╔'
+    TR = '╗'
+    BL = '╚'
+    BR = '╝'
+    H  = '═'
+    V  = '║'
+    SEP = '─'
+  }
+}
+
+function Write-Separator([int]$innerWidth, [string]$color = 'DarkGray') {
+  $ui = Get-UiChars
+  Write-Host (($ui.SEP * $innerWidth)) -ForegroundColor $color
+}
+
+function Write-SectionHeader([string]$title, [string]$lineColor, [string]$titleColor) {
+  $inner = Get-UiInnerWidth
+  $ui = Get-UiChars
+  Write-Host (($ui.H * $inner)) -ForegroundColor $lineColor
+  Write-Host ("  " + $title) -ForegroundColor $titleColor
+  Write-Host (($ui.H * $inner)) -ForegroundColor $lineColor
+}
+
 function Ensure-Venv311 {
   # 检查 Python 3.11（尽量与服务器保持一致）
   $null = cmd /c "py -3.11 -V 2>nul"
@@ -191,9 +291,7 @@ function Pick-ServerTarget {
 
 function Start-Sim {
   Write-Host ""
-  Write-Host "═══════════════════════════════════" -ForegroundColor DarkGreen
-  Write-Host "  启动模拟器" -ForegroundColor Green
-  Write-Host "═══════════════════════════════════" -ForegroundColor DarkGreen
+  Write-SectionHeader -title "启动模拟器" -lineColor DarkGreen -titleColor Green
   Write-Host ""
 
   if ((Get-SimPids).Count -gt 0) {
@@ -237,9 +335,7 @@ function Start-Sim {
 
 function Stop-Sim {
   Write-Host ""
-  Write-Host "═══════════════════════════════════" -ForegroundColor DarkRed
-  Write-Host "  停止模拟器" -ForegroundColor Red
-  Write-Host "═══════════════════════════════════" -ForegroundColor DarkRed
+  Write-SectionHeader -title "停止模拟器" -lineColor DarkRed -titleColor Red
   Write-Host ""
 
   $pids = Get-SimPids
@@ -282,9 +378,7 @@ function Stop-Sim {
 
 function Show-Status {
   Write-Host ""
-  Write-Host "═══════════════════════════════════" -ForegroundColor DarkCyan
-  Write-Host "  模拟器状态" -ForegroundColor Cyan
-  Write-Host "═══════════════════════════════════" -ForegroundColor DarkCyan
+  Write-SectionHeader -title "模拟器状态" -lineColor DarkCyan -titleColor Cyan
   Write-Host ""
 
   $pids = Get-SimPids
@@ -341,13 +435,29 @@ function Toggle-Sim {
 function Show-Banner {
   Clear-Host
   Write-Host ""
-  Write-Host "╔═══════════════════════════════════════╗" -ForegroundColor Magenta
-  Write-Host "║                                       ║" -ForegroundColor Magenta
-  Write-Host "║     " -NoNewline -ForegroundColor Magenta
-  Write-Host "EdgeWind 模拟器控制台" -NoNewline -ForegroundColor White
-  Write-Host "          ║" -ForegroundColor Magenta
-  Write-Host "║                                       ║" -ForegroundColor Magenta
-  Write-Host "╚═══════════════════════════════════════╝" -ForegroundColor Magenta
+  $inner = Get-UiInnerWidth
+  $ui = Get-UiChars
+
+  $title = 'EdgeWind 模拟器控制台'
+  $title = Truncate-ToWidth $title $inner
+  $titleW = Get-DisplayWidth $title
+  if ($titleW -gt $inner) { $titleW = $inner }
+
+  $leftPad = [int][Math]::Floor(($inner - $titleW) / 2)
+  $rightPad = [int]($inner - $titleW - $leftPad)
+
+  Write-Host ($ui.TL + ($ui.H * $inner) + $ui.TR) -ForegroundColor Magenta
+  Write-Host ($ui.V + (' ' * $inner) + $ui.V) -ForegroundColor Magenta
+
+  # 标题行（分段上色）：边框/填充 Magenta，标题 White
+  Write-Host $ui.V -NoNewline -ForegroundColor Magenta
+  Write-Host (' ' * $leftPad) -NoNewline -ForegroundColor Magenta
+  Write-Host $title -NoNewline -ForegroundColor White
+  Write-Host (' ' * $rightPad) -NoNewline -ForegroundColor Magenta
+  Write-Host $ui.V -ForegroundColor Magenta
+
+  Write-Host ($ui.V + (' ' * $inner) + $ui.V) -ForegroundColor Magenta
+  Write-Host ($ui.BL + ($ui.H * $inner) + $ui.BR) -ForegroundColor Magenta
   Write-Host ""
 }
 
@@ -365,7 +475,8 @@ function Menu {
     }
 
     Write-Host ""
-    Write-Host "─────────────────────────────────────" -ForegroundColor DarkGray
+    $inner = Get-UiInnerWidth
+    Write-Separator -innerWidth $inner -color DarkGray
     Write-Host ""
     Write-Host "  [S] 启动模拟器（新窗口可交互）" -ForegroundColor Green
     Write-Host "  [X] 停止模拟器（结束 sim.py）" -ForegroundColor Red
@@ -374,7 +485,7 @@ function Menu {
     Write-Host "  [I] 查看状态" -ForegroundColor Blue
     Write-Host "  [Q] 退出" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "─────────────────────────────────────" -ForegroundColor DarkGray
+    Write-Separator -innerWidth $inner -color DarkGray
     Write-Host ""
 
     $sel = Read-Host "  请选择"

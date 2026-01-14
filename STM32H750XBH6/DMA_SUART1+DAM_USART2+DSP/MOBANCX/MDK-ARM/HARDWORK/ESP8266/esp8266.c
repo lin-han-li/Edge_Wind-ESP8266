@@ -30,6 +30,29 @@ static void ESP_Clear_Error_Flags(void);
 static void Helper_FloatArray_To_String(char *dest, float *data, int count, int step);
 static void ESP_Exit_Transparent_Mode(void);
 static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, float noise_level);
+static UART_HandleTypeDef* ESP_GetLogUart(void);
+static void ESP_Log_RxBuf(const char *tag);
+
+static UART_HandleTypeDef* ESP_GetLogUart(void) {
+#if (ESP_LOG_UART_PORT == 1)
+    extern UART_HandleTypeDef huart1;
+    return &huart1;
+#elif (ESP_LOG_UART_PORT == 2)
+    return &huart2; // ⚠️一般不建议：USART2 用于 ESP8266 通信
+#else
+    extern UART_HandleTypeDef huart1;
+    return &huart1; // 默认回退 USART1
+#endif
+}
+
+static void ESP_Log_RxBuf(const char *tag) {
+#if (ESP_DEBUG)
+    if (tag == NULL) tag = "RX";
+    ESP_Log("[ESP 回显 %s] << %s\r\n", tag, esp_rx_buf);
+#else
+    (void)tag;
+#endif
+}
 
 /* ================= 核心代码 ================= */
 
@@ -43,18 +66,20 @@ void ESP_Init(void) {
         fft_initialized = 1;
     }
 
-    ESP_Log("\r\n[ESP] Init (4-Channel Mode)...\r\n");
+    ESP_Log("\r\n[ESP] 初始化（4通道模式）...\r\n");
+    ESP_Log("[ESP] WiFi 名称(SSID): %s\r\n", WIFI_SSID);
+    ESP_Log("[ESP] 服务器地址: %s:%d\r\n", SERVER_IP, SERVER_PORT);
     ESP_Clear_Error_Flags();
     ESP_Exit_Transparent_Mode();
 
     /* 复位流程 */
-    ESP_Log("[ESP CMD] >> AT+RST\r\n");
+    ESP_Log("[ESP 指令] >> AT+RST\r\n");
     HAL_UART_Transmit(&huart2, (uint8_t *)"AT+RST\r\n", 8, 100);
     HAL_Delay(3500); 
     ESP_Clear_Error_Flags();
 
     while(!ESP_Send_Cmd("ATE0\r\n", "OK", 500)) {
-        ESP_Log("[ESP] Retrying ATE0...\r\n");
+        ESP_Log("[ESP] 关闭回显失败，重试 ATE0...\r\n");
         ESP_Clear_Error_Flags();
         HAL_Delay(500);
         retry_count++;
@@ -62,23 +87,34 @@ void ESP_Init(void) {
     }
 
     ESP_Send_Cmd("AT+CWMODE=1\r\n", "OK", 1000); 
+
+    // 连接 WiFi（注意：不要在日志里打印明文密码）
     sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
     if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000)) {
         if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000)) {
-             ESP_Log("[ESP] WiFi Failed.\r\n");
+             ESP_Log("[ESP] WiFi 连接失败。\r\n");
+             ESP_Log_RxBuf("WIFI_FAIL");
              return;
         }
     }
+    ESP_Log("[ESP] WiFi 连接成功（已获取 IP）。\r\n");
+    // 打印 STA IP 信息（便于确认是否进到目标网段）
+    ESP_Send_Cmd("AT+CIFSR\r\n", "OK", 2000);
+    ESP_Log_RxBuf("CIFSR");
 
     /* TCP 连接 */
     ESP_Send_Cmd("AT+CIPCLOSE\r\n", "OK", 500); 
     sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", SERVER_IP, SERVER_PORT);
     if (!ESP_Send_Cmd(cmd_buf, "CONNECT", 10000)) {
         if(strstr((char*)esp_rx_buf, "ALREADY") == NULL) {
-             ESP_Log("[ESP] TCP Failed.\r\n");
+             ESP_Log("[ESP] TCP 连接失败。\r\n");
+             ESP_Log_RxBuf("TCP_FAIL");
              return;
         }
     }
+    ESP_Log("[ESP] TCP 连接成功（CONNECT）。\r\n");
+    ESP_Send_Cmd("AT+CIPSTATUS\r\n", "OK", 1000);
+    ESP_Log_RxBuf("CIPSTATUS");
 
     ESP_Send_Cmd("AT+CIPMODE=1\r\n", "OK", 1000);
     ESP_Send_Cmd("AT+CIPSEND\r\n", ">", 2000); 
@@ -86,7 +122,7 @@ void ESP_Init(void) {
     
     ESP_Register();
     g_esp_ready = 1;
-    ESP_Log("[ESP] SYSTEM READY (4 Channels).\r\n");
+    ESP_Log("[ESP] 系统就绪（4通道），开始上报数据。\r\n");
 
     /* === 初始化 4 个通道的元数据 (与 api.py 逻辑严格对应) === */
     
@@ -247,7 +283,7 @@ void ESP_Post_Data(void) {
 
 void ESP_Register(void) {
     char *body_start = (char *)http_packet_buf + 256; 
-    ESP_Log("[ESP] Registering...\r\n");
+    ESP_Log("[ESP] 正在注册设备...\r\n");
     sprintf(body_start, "{\"device_id\":\"%s\",\"location\":\"%s\",\"hw_version\":\"v1.0_4CH\"}", NODE_ID, NODE_LOCATION);
     uint32_t body_len = strlen(body_start);
     int h_len = sprintf((char *)http_packet_buf, 
@@ -273,6 +309,16 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
     uint16_t idx = 0;
     ESP_Clear_Error_Flags();
     memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
+
+#if (ESP_DEBUG)
+    // 打印命令（敏感信息脱敏）
+    if (cmd && (strncmp(cmd, "AT+CWJAP=", 9) == 0)) {
+        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", WIFI_SSID);
+    } else if (cmd) {
+        ESP_Log("[ESP 指令] >> %s", cmd);
+    }
+#endif
+
     HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100);
     start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout) {
@@ -281,10 +327,19 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
             if (idx < sizeof(esp_rx_buf) - 1) {
                 esp_rx_buf[idx++] = ch;
                 esp_rx_buf[idx] = 0;
-                if (strstr((char *)esp_rx_buf, reply) != NULL) return 1;
+                if (strstr((char *)esp_rx_buf, reply) != NULL) {
+#if (ESP_DEBUG)
+                    ESP_Log("[ESP 期望] << %s\r\n", reply);
+#endif
+                    return 1;
+                }
             }
         } 
     }
+#if (ESP_DEBUG)
+    ESP_Log("[ESP 超时] 等待关键字: %s\r\n", reply);
+    ESP_Log_RxBuf("TIMEOUT");
+#endif
     return 0;
 }
 
@@ -309,6 +364,16 @@ static void ESP_Log(const char *format, ...) {
     va_start(args, format);
     vsnprintf(log_buf, sizeof(log_buf), format, args);
     va_end(args);
-    printf("%s", log_buf);
+#if (ESP_DEBUG)
+    // 直接打到指定调试串口（避免 printf 重定向配置不一致导致“看不到日志”）
+    UART_HandleTypeDef *hu = ESP_GetLogUart();
+    if (hu) {
+        HAL_UART_Transmit(hu, (uint8_t *)log_buf, (uint16_t)strlen(log_buf), 100);
+    } else {
+        printf("%s", log_buf);
+    }
+#else
+    (void)log_buf;
+#endif
 }
 

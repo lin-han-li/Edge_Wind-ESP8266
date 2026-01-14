@@ -23,7 +23,6 @@
 #include "memorymap.h"
 #include "usart.h"
 
-
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "arm_const_structs.h"
@@ -31,7 +30,6 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-
 
 #include "esp8266.h"
 
@@ -74,7 +72,8 @@ static void MPU_Config(void);
  * @brief  The application entry point.
  * @retval int
  */
-int main(void) {
+int main(void)
+{
 
   /* USER CODE BEGIN 1 */
 
@@ -110,11 +109,13 @@ int main(void) {
   printf("System Start...\r\n");
 
   ESP_Init(); // 这会阻塞几秒钟进行连接
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1) {
+  while (1)
+  {
     // 在 main while(1) 中：
 
     // 1. 全速计算 (保证数据实时性)
@@ -135,7 +136,8 @@ int main(void) {
  * @brief System Clock Configuration
  * @retval None
  */
-void SystemClock_Config(void) {
+void SystemClock_Config(void)
+{
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
@@ -147,7 +149,8 @@ void SystemClock_Config(void) {
    */
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
 
-  while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {
+  while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY))
+  {
   }
 
   /** Initializes the RCC Oscillators according to the specified parameters
@@ -166,7 +169,8 @@ void SystemClock_Config(void) {
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_3;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
   RCC_OscInitStruct.PLL.PLLFRACN = 0;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
     Error_Handler();
   }
 
@@ -183,7 +187,8 @@ void SystemClock_Config(void) {
   RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
   RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
+  {
     Error_Handler();
   }
 }
@@ -194,7 +199,8 @@ void SystemClock_Config(void) {
 
 /* MPU Configuration */
 
-void MPU_Config(void) {
+void MPU_Config(void)
+{
   MPU_Region_InitTypeDef MPU_InitStruct = {0};
 
   /* Disables the MPU */
@@ -223,11 +229,13 @@ void MPU_Config(void) {
  * @brief  This function is executed in case of error occurrence.
  * @retval None
  */
-void Error_Handler(void) {
+void Error_Handler(void)
+{
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1) {
+  while (1)
+  {
   }
   /* USER CODE END Error_Handler_Debug */
 }
@@ -240,7 +248,8 @@ void Error_Handler(void) {
  * @param  line: assert_param error line source number
  * @retval None
  */
-void assert_failed(uint8_t *file, uint32_t line) {
+void assert_failed(uint8_t *file, uint32_t line)
+{
   /* USER CODE BEGIN 6 */
   /* User can add his own implementation to report the file name and line
      number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,

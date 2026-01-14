@@ -10,13 +10,43 @@ extern "C" {
 #include <stdbool.h>
 
 /* ================= 用户配置区 ================= */
-#define WIFI_SSID       "IQOO11"
-#define WIFI_PASSWORD   "12345688"
-#define SERVER_IP       "192.168.118.147"
-#define SERVER_PORT     5000
+// 推荐：使用本地私有配置文件（已在 .gitignore 忽略，避免提交 WiFi/服务器敏感信息）
+// 同目录下提供模板：esp8266_config.h.example
+#include "esp8266_config.h"
 
+// 兼容兜底：如果没有提供 esp8266_config.h，则使用默认值（请按需修改）
+#ifndef WIFI_SSID
+#define WIFI_SSID       "YOUR_WIFI_SSID"
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
+#endif
+#ifndef SERVER_IP
+#define SERVER_IP       "192.168.10.43"
+#endif
+#ifndef SERVER_PORT
+#define SERVER_PORT     5000
+#endif
+#ifndef NODE_ID
 #define NODE_ID         "STM32_H7_Node"
+#endif
+#ifndef NODE_LOCATION
 #define NODE_LOCATION   "Lab_Test"
+#endif
+
+/* ================= 调试输出配置 =================
+ * 说明：ESP8266 使用 USART2 通信；本工程 printf 默认重定向到 USART1（见 Core/Src/usart.c 的 fputc）。
+ * - ESP_DEBUG: 1=开启调试日志（推荐联调时开启）
+ * - ESP_LOG_UART_PORT: 1=USART1（推荐接到 PC 串口助手）
+ *   如果你板子上 VCP/串口接的不是 USART1，可按需改成 2/3/... 并在 esp8266.c 中补充分支映射。
+ */
+#ifndef ESP_DEBUG
+#define ESP_DEBUG 1
+#endif
+
+#ifndef ESP_LOG_UART_PORT
+#define ESP_LOG_UART_PORT 1
+#endif
 
 // 数据参数
 #define WAVEFORM_POINTS 1024       // 采集点数

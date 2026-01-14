@@ -550,6 +550,11 @@
               <FileType>5</FileType>
               <FilePath>.\HARDWORK\ESP8266\esp8266.h</FilePath>
             </File>
+            <File>
+              <FileName>esp8266_config.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\HARDWORK\ESP8266\esp8266_config.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

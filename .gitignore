@@ -121,46 +121,48 @@ logs/*.log
 # -------------------------------------------------------------------
 # STM32 / Keil MDK / CubeMX / Embedded build outputs
 # -------------------------------------------------------------------
+# 编译输出文件（二进制/链接/调试）
 *.hex
 *.bin
 *.elf
 *.axf
 *.out
 *.map
-*.lst
-*.d
-*.o
-*.obj
+
+# 编译中间产物（只忽略 MDK-ARM/MOBANCX/ 子目录下的，避免误删源码）
+**/MDK-ARM/**/MOBANCX/**/*.lst
+**/MDK-ARM/**/MOBANCX/**/*.d
+**/MDK-ARM/**/MOBANCX/**/*.o
+**/MDK-ARM/**/MOBANCX/**/*.obj
+**/MDK-ARM/**/MOBANCX/**/*.crf
+**/MDK-ARM/**/MOBANCX/**/*.dep
+
+# 其他编译产物
 *.su
-*.dep
-*.crf
 *.i
-*.s
-*.asm
 *.a
 *.lib
 *.pdb
-*.uvguix
-*.uvoptx
-JLinkLog.txt
-JLinkSettings.ini
 
-# Keil MDK folders
+# Keil 调试/配置文件
 **/MDK-ARM/**/Objects/
 **/MDK-ARM/**/Listings/
 **/MDK-ARM/**/.dep/
 **/MDK-ARM/**/RTE/
 **/MDK-ARM/**/DebugConfig/
+*.uvoptx
+JLinkLog.txt
+JLinkSettings.ini
 
 # STM32CubeIDE
 **/.settings/
 **/.project
 **/.cproject
-**/.mxproject
+*.mxproject
 **/Debug/
 **/Release/
 
-# CMSIS-DSP 文档/示例（体积大，通常无需上传源码仓库；如需请删除这些 ignore）
+# CMSIS-DSP 文档/示例（体积大、路径超长（>260字符）、运行时不需要）
 **/CMSIS-DSP/**/Documentation/
 **/CMSIS-DSP/**/Examples/
 
@@ -186,4 +188,3 @@ gunicorn.pid
 # Backup files
 *.backup
 backup/
-

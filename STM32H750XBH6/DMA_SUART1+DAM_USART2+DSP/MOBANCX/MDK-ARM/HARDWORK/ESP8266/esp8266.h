@@ -76,7 +76,7 @@ extern "C"
  */
 // 压力测试：不降采样（用户要求）
 #ifndef WAVEFORM_SEND_STEP
-#define WAVEFORM_SEND_STEP 2
+#define WAVEFORM_SEND_STEP 1
 #endif
 
 #ifndef FFT_POINTS

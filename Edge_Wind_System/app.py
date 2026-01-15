@@ -265,7 +265,8 @@ def load_user(user_id):
 # ==================== 全局变量（节点管理） ====================
 active_nodes = {}
 node_commands = {}
-NODE_TIMEOUT = 10
+# 默认 60s，可用 EDGEWIND_NODE_TIMEOUT_SEC 调整（与 api.py / socket_events.py 保持一致）
+NODE_TIMEOUT = max(10, int(os.environ.get("EDGEWIND_NODE_TIMEOUT_SEC", "60") or "60"))
 
 # ==================== 后台任务线程池 ====================
 db_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="DB-Worker")

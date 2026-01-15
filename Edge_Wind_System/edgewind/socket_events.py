@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 # 全局变量（将从app传入）
 client_subscriptions = {}  # {session_id: set of node_ids}
 active_nodes = {}
-NODE_TIMEOUT = 10
+# 与后端 active_nodes 口径一致：默认 60s，可用 EDGEWIND_NODE_TIMEOUT_SEC 调整
+NODE_TIMEOUT = max(10, int((__import__("os").environ.get("EDGEWIND_NODE_TIMEOUT_SEC", "60") or "60")))
 
 
 def init_socket_events(socketio, nodes):

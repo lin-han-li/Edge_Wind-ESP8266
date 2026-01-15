@@ -37,7 +37,11 @@ _last_hb_log_ts = {}
 # 全局变量（将从app传入）
 active_nodes = {}  # 将在app.py中初始化并传入
 node_commands = {}  # 将在app.py中初始化并传入
-NODE_TIMEOUT = 10  # 节点超时时间（秒）
+
+# 节点超时时间（秒）
+# 说明：此前为 10s，网络/设备偶发抖动（或一次心跳解析失败）就会导致节点被清空，前端表现为“运行一段时间后停机/无节点”。
+# 这里改为环境变量可配置，默认 60s，更贴合真实链路。
+NODE_TIMEOUT = max(10, int(os.environ.get("EDGEWIND_NODE_TIMEOUT_SEC", "60") or "60"))
 db_executor = None  # 后台线程池，将在注册蓝图时设置
 socketio_instance = None  # SocketIO实例，将在注册蓝图时设置
 app_instance = None  # Flask应用实例

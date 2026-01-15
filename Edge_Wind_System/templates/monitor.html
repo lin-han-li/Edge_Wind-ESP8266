@@ -688,6 +688,18 @@
             
             // 处理 HTTP 错误（500, 404 等）
             if (!response.ok) {
+                // 登录态过期：后端会对 /api/* 返回 401 JSON（不会 302 跳转）
+                // 如果不处理，前端会表现为“节点停机/一直等待”，但实际上是需要重新登录。
+                if (response.status === 401) {
+                    console.warn('[fetchActiveNodes] 401 未登录或登录态失效，跳转登录页');
+                    try {
+                        const next = encodeURIComponent(window.location.pathname + window.location.search);
+                        window.location.href = `/login?next=${next}`;
+                    } catch (e) {
+                        window.location.href = '/login';
+                    }
+                    return;
+                }
                 console.error(`[fetchActiveNodes] HTTP错误: ${response.status} ${response.statusText}`);
                 // 即使出错也继续轮询，不中断
                 return;
@@ -1484,6 +1496,36 @@
     }
     
     // ========== 共享渲染逻辑（辅助函数） ==========
+    // ========== 性能：调试日志与图表更新调度 ==========
+    // 说明：
+    // - 你截图里 [renderDashboard]/[updateCharts] 的 console.log 属于“高频日志”，开着 DevTools 会导致日志堆积，
+    //   最终页面卡死（浏览器要渲染/保存海量 console 条目）。
+    // - WebSocket 高频推送下，每条消息都 requestAnimationFrame(updateCharts) 也会造成 ECharts 高频 setOption 重绘。
+    // 这里做两件事：默认关闭高频日志 + 合并/限频图表刷新（保留最新数据即可）。
+    const MONITOR_DEBUG_LOG = false;
+    function debugLog(...args) {
+        if (MONITOR_DEBUG_LOG) console.log(...args);
+    }
+
+    let _chartsUpdateScheduled = false;
+    let _lastChartsUpdateTs = 0;
+    const CHARTS_MAX_HZ = 10; // 最多 10Hz 刷新图表（足够平滑；防止高频推送把页面拖死）
+    function scheduleChartsUpdate() {
+        if (_chartsUpdateScheduled) return;
+        _chartsUpdateScheduled = true;
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const minInterval = 1000 / CHARTS_MAX_HZ;
+        const due = _lastChartsUpdateTs + minInterval;
+        const delay = Math.max(0, due - now);
+        setTimeout(() => {
+            requestAnimationFrame(() => {
+                _chartsUpdateScheduled = false;
+                _lastChartsUpdateTs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+                if (typeof updateCharts === 'function') updateCharts();
+            });
+        }, delay);
+    }
+
     function renderDashboard(d) {
         if (!d) {
             console.warn('[renderDashboard] 数据为空');
@@ -1512,7 +1554,7 @@
         let waveData = d[waveKey] || [];
         let specData = d[specKey] || [];
         
-        console.log(`[renderDashboard] 数据源: ${currentSource}, 波形数据长度: ${waveData.length}, 频谱数据长度: ${specData.length}`);
+        debugLog(`[renderDashboard] 数据源: ${currentSource}, 波形数据长度: ${waveData.length}, 频谱数据长度: ${specData.length}`);
         
         // 如果扁平化键没有数据，从 channels 数组获取（向后兼容）
         if ((!waveData || waveData.length === 0) && d.channels && Array.isArray(d.channels) && d.channels.length > 0) {
@@ -1552,15 +1594,8 @@
             console.warn('[renderDashboard] currentNodeId为空，无法更新缓存');
         }
         
-        // D. 调用图表更新函数 - 优化：使用requestAnimationFrame减少重绘
-        if (typeof updateCharts === 'function') {
-            // 使用requestAnimationFrame确保在下一帧渲染，避免阻塞
-            requestAnimationFrame(() => {
-                updateCharts();
-            });
-        } else {
-            console.error('[renderDashboard] updateCharts函数不存在！');
-        }
+        // D. 图表更新：合并/限频（避免高频推送导致 setOption 过密 + DevTools 卡死）
+        scheduleChartsUpdate();
     }
 
     // ========== 用户交互：即时切换（带视觉确认） ==========
@@ -2272,15 +2307,11 @@
             }
         }
         
-        // 调试日志（开发时启用，帮助诊断问题）
+        // 高频日志会导致 DevTools 堆积卡死；仅在需要排查时打开 MONITOR_DEBUG_LOG
         if (!data || (!data.waveform && !data.fft_spectrum)) {
-            console.warn(`[updateCharts] 警告：边缘节点 ${currentNodeId} 通道 ${currentChannelIndex} (ID: ${channelId}) 没有波形数据`, {
-                channel: channel,
-                availableKeys: Object.keys(nodeData[currentNodeId] || {}),
-                nodeData: nodeData[currentNodeId]
-            });
+            debugLog(`[updateCharts] 警告：边缘节点 ${currentNodeId} 通道 ${currentChannelIndex} (ID: ${channelId}) 没有波形/频谱数据`);
         } else {
-            console.log(`[updateCharts] ✅ 边缘节点: ${currentNodeId}, 通道索引: ${currentChannelIndex}, 通道ID: ${channelId}, 波形点数: ${data.waveform?.length || 0}, FFT点数: ${data.fft_spectrum?.length || 0}`);
+            debugLog(`[updateCharts] ✅ 边缘节点: ${currentNodeId}, 通道索引: ${currentChannelIndex}, 通道ID: ${channelId}, 波形点数: ${data.waveform?.length || 0}, FFT点数: ${data.fft_spectrum?.length || 0}`);
         }
         
         // 只更新当前激活的标签页图表（性能优化）

@@ -542,6 +542,8 @@
             display: flex;
             flex-direction: column;
             gap: 10px;
+            /* 避免遮挡页面交互，但允许 Toast 自身可点击 */
+            pointer-events: none;
         }
         
         .custom-toast {
@@ -557,6 +559,7 @@
             display: flex;
             align-items: center;
             gap: 12px;
+            pointer-events: auto;
         }
         
         .custom-toast.success {
@@ -603,6 +606,7 @@
             flex-shrink: 0;
             padding: 4px;
             line-height: 1;
+            pointer-events: auto;
         }
         
         .custom-toast-close:hover {
@@ -1370,7 +1374,7 @@
                 <div class="custom-toast-content">
                     <div class="custom-toast-message">${message}</div>
                 </div>
-                <span class="custom-toast-close" onclick="this.parentElement.remove()">×</span>
+                <span class="custom-toast-close" role="button" aria-label="关闭通知">×</span>
             `;
             
             // 优化：立即添加到DOM，然后使用requestAnimationFrame触发显示动画
@@ -1395,6 +1399,33 @@
                 }, 300);
             }, 5000);
         };
+
+        // ========== Toast 关闭按钮：事件委托（修复“× 点了没反应”）==========
+        document.addEventListener('click', function(e) {
+            const btn = e.target && e.target.closest ? e.target.closest('.custom-toast-close') : null;
+            if (!btn) return;
+            const toast = btn.closest('.custom-toast');
+            if (toast) {
+                e.preventDefault();
+                e.stopPropagation();
+                toast.remove();
+            }
+        }, true);
+
+        // ========== 节点变化通知：供各页面立即刷新（监测页等）==========
+        function _notifyNodesChanged(addedIds, removedIds) {
+            try {
+                window.dispatchEvent(new CustomEvent('edgewind:nodes-changed', {
+                    detail: { added: addedIds || [], removed: removedIds || [] }
+                }));
+            } catch (e) {}
+            // 兼容：允许页面注册回调（例如 monitor 页面直接拉取新节点列表）
+            try {
+                if (typeof window.edgewindOnNodesChanged === 'function') {
+                    window.edgewindOnNodesChanged({ added: addedIds || [], removed: removedIds || [] });
+                }
+            } catch (e) {}
+        }
         
         // ========== 统一系统事件发布函数（带去重逻辑）==========
         // 优化：智能去重 - 只对真正的重复消息去重（相同节点+相同故障代码在1秒内）
@@ -1514,8 +1545,10 @@
                 }
                 
                 // 检测新节点（出现在当前列表但不在上一次列表中）
+                const addedIds = [];
                 currentIds.forEach(id => {
                     if (!globalLastNodeIds.includes(id)) {
+                        addedIds.push(id);
                         if (typeof window.publishSystemEvent === 'function') {
                             window.publishSystemEvent(`[系统动态] 新节点 ${id} 已通过自注册接入系统`, 'success');
                         } else {
@@ -1525,8 +1558,10 @@
                 });
                 
                 // 检测断开节点（出现在上一次列表但不在当前列表中）
+                const removedIds = [];
                 globalLastNodeIds.forEach(id => {
                     if (!currentIds.includes(id)) {
+                        removedIds.push(id);
                         if (typeof window.publishSystemEvent === 'function') {
                             window.publishSystemEvent(`[系统动态] 节点 ${id} 通信超时，已自动注销`, 'warning');
                         } else {
@@ -1534,6 +1569,11 @@
                         }
                     }
                 });
+
+                // 若节点集合发生变化，通知页面立即刷新
+                if (addedIds.length > 0 || removedIds.length > 0) {
+                    _notifyNodesChanged(addedIds, removedIds);
+                }
                 
                 // ========== 检测故障状态变化（全局统一处理，避免重复）==========
                 currentIds.forEach(id => {

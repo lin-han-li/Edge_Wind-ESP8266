@@ -905,6 +905,19 @@
         }
     }
 
+    // 允许 base.html 的全局节点监控在节点变化时触发“立即刷新”
+    // 通过 window.edgewindOnNodesChanged 回调连接起来（避免互相强依赖）
+    (function attachNodeChangedHook() {
+        let t = null;
+        window.edgewindOnNodesChanged = function() {
+            clearTimeout(t);
+            t = setTimeout(() => {
+                // 立即拉取一次最新列表，保证“节点注册/注销”马上反映到侧边栏
+                fetchActiveNodes();
+            }, 50);
+        };
+    })();
+
     // ========== 处理自动聚焦逻辑 ==========
     function handleAutoFocus() {
         if (autoFocusHandled) return;  // 只处理一次
@@ -1775,7 +1788,19 @@
             const lastCode = nodeFaultHistory[nodeId];
             
             // 更新内存中的状态
-            if (NODE_CONFIGS[nodeId]) {
+            if (!NODE_CONFIGS[nodeId]) {
+                // 新节点：先插入一个最小占位（名称用 nodeId），并触发一次列表重绘
+                NODE_CONFIGS[nodeId] = {
+                    node_id: nodeId,
+                    device_id: nodeId,
+                    name: nodeId,
+                    location: '',
+                    status: msg.status || 'online',
+                    fault_code: msg.fault_code || 'E00',
+                    channels: []
+                };
+                renderNodeList();
+            } else {
                 NODE_CONFIGS[nodeId].status = msg.status;
                 NODE_CONFIGS[nodeId].fault_code = msg.fault_code;
             }
@@ -1847,6 +1872,15 @@
         }, 200);  // 200ms节流间隔
         
         socket.on('node_status_update', throttledStatusUpdate);
+
+        // 后端主动推送：节点集合变化（注册/注销）
+        socket.on('nodes_changed', (msg) => {
+            try {
+                console.log('🔄 [WebSocket] nodes_changed:', msg);
+                // 立即拉取最新列表，确保新增/移除节点立刻体现在 UI
+                fetchActiveNodes();
+            } catch (e) {}
+        });
         
         // ========== 性能优化：批量更新关键指标卡片 ==========
         function updateMetricsCards(metrics) {
@@ -2028,7 +2062,13 @@
         const interval = parseInt(localStorage.getItem('pollInterval')) || 50;  // 从1000ms改为50ms
         if (nodeListInterval) clearInterval(nodeListInterval);
         if (updateInterval) clearInterval(updateInterval);
-        nodeListInterval = setInterval(fetchActiveNodes, 5000);  // 边缘节点列表5秒更新一次即可
+        // 关键：当 WebSocket 不可用时，fetchActiveNodes 实际上也是“数据源”。
+        // 若仍按 5s 拉一次，会表现为“只有节点但不刷新波形/数据”。
+        // 设备侧默认约 5Hz（200ms）上报，因此这里下限设置为 200ms，避免过度压测后端。
+        const fetchInterval = Math.max(200, interval);
+        // 先立即拉一次，避免刚切换回退模式时等待间隔造成“卡住”的错觉
+        fetchActiveNodes();
+        nodeListInterval = setInterval(fetchActiveNodes, fetchInterval);
         updateInterval = setInterval(updateAllNodesData, interval);  // 数据更新使用快速轮询
     }
     

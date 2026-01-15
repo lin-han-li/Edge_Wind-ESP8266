@@ -188,3 +188,25 @@ gunicorn.pid
 # Backup files
 *.backup
 backup/
+
+# -------------------------------------------------------------------
+# EdgeWind Desktop (pywebview + PyInstaller + Inno Setup) outputs
+# -------------------------------------------------------------------
+# PyInstaller spec / intermediate artifacts
+*.spec
+*.toc
+*.pkg
+
+# Desktop build outputs (keep scripts like run_desktop.py/build_windows.bat/installer.iss)
+EdgeWind_Desktop/installer/
+EdgeWind_Desktop/dist/
+EdgeWind_Desktop/build/
+
+# Generated icon wrapper (source icon stays tracked)
+EdgeWind_Desktop/EdgeWind_build.ico
+
+# Desktop runtime outputs (generated at run/build time)
+EdgeWind_Desktop/edgewind_runtime.txt
+EdgeWind_Desktop/edgewind_runtime.env
+EdgeWind_Desktop/edgewind_active_nodes_debug.txt
+EdgeWind_Desktop/edgewind_server_stdout.log

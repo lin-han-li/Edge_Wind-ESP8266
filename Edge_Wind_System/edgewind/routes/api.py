@@ -256,12 +256,43 @@ def register_device():
         device = Device.query.filter_by(device_id=device_id).first()
         
         if device:
+            was_new_in_active = device_id not in (active_nodes or {})
             # 更新现有设备信息
             device.location = location
             device.hw_version = hw_version
             device.status = 'online'
             device.last_heartbeat = datetime.utcnow()
             db.session.commit()
+            # 同步 active_nodes（注册也视为一次上线）
+            try:
+                now_ts = time.time()
+                active_nodes[device_id] = {
+                    'timestamp': now_ts,
+                    'status': 'online',
+                    'fault_code': getattr(device, 'fault_code', 'E00') or 'E00',
+                    'data': {
+                        'node_id': device_id,
+                        'status': 'online',
+                        'fault_code': getattr(device, 'fault_code', 'E00') or 'E00',
+                        'channels': [],
+                    }
+                }
+            except Exception:
+                pass
+            # WebSocket：通知前端立即刷新节点列表
+            try:
+                if socketio_instance:
+                    if was_new_in_active:
+                        socketio_instance.emit('nodes_changed', {'added': [device_id], 'removed': []}, namespace='/')
+                    socketio_instance.emit('node_status_update', {
+                        'node_id': device_id,
+                        'status': 'online',
+                        'fault_code': getattr(device, 'fault_code', 'E00') or 'E00',
+                        'timestamp': time.time(),
+                        'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
+                    }, namespace='/')
+            except Exception:
+                pass
             return jsonify({
                 'message': 'Device updated',
                 'device_id': device_id
@@ -277,6 +308,35 @@ def register_device():
             )
             db.session.add(device)
             db.session.commit()
+            # 同步 active_nodes（注册也视为一次上线）
+            try:
+                now_ts = time.time()
+                active_nodes[device_id] = {
+                    'timestamp': now_ts,
+                    'status': 'online',
+                    'fault_code': 'E00',
+                    'data': {
+                        'node_id': device_id,
+                        'status': 'online',
+                        'fault_code': 'E00',
+                        'channels': [],
+                    }
+                }
+            except Exception:
+                pass
+            # WebSocket：通知前端立即刷新节点列表
+            try:
+                if socketio_instance:
+                    socketio_instance.emit('nodes_changed', {'added': [device_id], 'removed': []}, namespace='/')
+                    socketio_instance.emit('node_status_update', {
+                        'node_id': device_id,
+                        'status': 'online',
+                        'fault_code': 'E00',
+                        'timestamp': time.time(),
+                        'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
+                    }, namespace='/')
+            except Exception:
+                pass
             return jsonify({
                 'message': 'Device registered successfully',
                 'device_id': device_id
@@ -721,6 +781,21 @@ def get_active_nodes():
             if current_time - node_info['timestamp'] > NODE_TIMEOUT:
                 expired_nodes.append(node_id)
                 del active_nodes[node_id]
+
+        # 若有注销节点：通过 WebSocket 推送（让前端立即刷新，而不是等下次轮询）
+        if expired_nodes:
+            try:
+                if socketio_instance:
+                    socketio_instance.emit('nodes_changed', {'added': [], 'removed': list(expired_nodes)}, namespace='/')
+                    for nid in expired_nodes:
+                        socketio_instance.emit('node_status_update', {
+                            'node_id': nid,
+                            'status': 'offline',
+                            'fault_code': 'E00',
+                            'timestamp': current_time,
+                        }, namespace='/')
+            except Exception:
+                pass
         
         # 返回活动节点
         active_nodes_list = []

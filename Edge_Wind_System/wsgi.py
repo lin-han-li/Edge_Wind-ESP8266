@@ -8,13 +8,7 @@
 或使用配置文件：
     gunicorn -c gunicorn_config.py wsgi:application
 """
-import os
-from app import app, socketio, init_db
-
-# 初始化数据库
-# 注意：在 Gunicorn 多 worker 模式下，每个 worker 都会执行此代码
-# 这是正常的，因为每个 worker 需要自己的数据库连接
-init_db()
+from app import app, socketio
 
 # Gunicorn 需要这个变量来启动服务器
 # application 是 Gunicorn 的标准入口点

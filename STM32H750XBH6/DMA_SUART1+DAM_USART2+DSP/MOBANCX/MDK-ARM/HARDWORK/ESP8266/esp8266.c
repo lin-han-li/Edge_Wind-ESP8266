@@ -136,6 +136,8 @@ static volatile uint8_t g_console_line_len = 0;
 // ---------- 服务器下发命令解析 ----------
 // 当从 USART2 收到的 HTTP 响应中提取到 "reset" 时置 1
 static volatile uint8_t g_server_reset_pending = 0;
+// 当检测到链路异常关键字（CLOSED/ERROR）时置 1，主循环触发软重连
+static volatile uint8_t g_link_reconnect_pending = 0;
 
 /* RX DMA 缓冲：用于接收服务器回包 (HTTP响应 / reset命令)。
  * 位于 AXI SRAM，加大到 4096 以降低 IDLE 中断触发频率，减少高负载下的丢包风险。 */
@@ -623,6 +625,14 @@ void ESP_Console_Poll(void)
         ESP_SetFaultCode("E00");
     }
 
+    // 2.1) 链路异常：尽快软重连，避免长时间“卡住”
+    if (g_link_reconnect_pending && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
+    {
+        g_link_reconnect_pending = 0;
+        ESP_Log("[ESP] 侦测到链路异常关键字，触发软重连...\r\n");
+        ESP_SoftReconnect();
+    }
+
 #if (ESP_DEBUG)
     // 3) 调试：每 1 秒输出一次统计信息 (确认 RX 是否存活)
     static uint32_t last_dbg = 0;
@@ -644,7 +654,7 @@ void ESP_Console_Poll(void)
     }
 #endif
 
-    // 4) 链路自恢复：如果长时间收不到服务器任何响应，直接硬复位并重连
+    // 4) 链路自恢复：如果长时间收不到服务器任何响应，先软重连（更快）
     // 这是为了应对极端情况下 TCP 假死或模组死机
     static uint32_t last_link_check = 0;
     static uint8_t no_rx_miss = 0;
@@ -657,8 +667,8 @@ void ESP_Console_Poll(void)
         {
             // 正常情况下服务器会对每次心跳返回 HTTP 响应
             uint32_t no_rx_ms = (uint32_t)ESP_NO_SERVER_RX_HARDRESET_SEC * 1000u;
-            if (no_rx_ms < 30000u)
-                no_rx_ms = 30000u; // 最小阈值 30s
+            if (no_rx_ms < 5000u)
+                no_rx_ms = 5000u; // 最小阈值 5s（避免过短导致抖动）
 
             // 如果 RX 字节数在增长，说明链路正常
             if (g_usart2_rx_bytes != last_rx_bytes_snapshot)
@@ -674,15 +684,12 @@ void ESP_Console_Poll(void)
                 // 连续 3 次检测都超时，才判定为断线
                 if (no_rx_miss >= 3)
                 {
-                    ESP_Log("[ESP] 警告：%lus 无服务器响应(Δt=%lums, miss=%u) -> 硬复位重连\r\n",
+                    ESP_Log("[ESP] 警告：%lus 无服务器响应(Δt=%lums, miss=%u) -> 软重连\r\n",
                             (unsigned long)(no_rx_ms / 1000u),
                             (unsigned long)(now - g_last_rx_tick),
                             (unsigned)no_rx_miss);
                     no_rx_miss = 0;
-                    g_link_reconnecting = 1;
-                    ESP_HardReset();
-                    g_link_reconnecting = 0;
-                    ESP_Init();
+                    ESP_SoftReconnect();
                 }
             }
         }
@@ -916,6 +923,15 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
     {
         g_server_reset_pending = 1;
     }
+    // 3) 链路异常检测：尽早触发软重连，避免长时间“卡住”
+    if (!g_link_reconnecting &&
+        (ESP_BufContains(data, len, "CLOSED") ||
+         ESP_BufContains(data, len, "CONNECT FAIL") ||
+         ESP_BufContains(data, len, "ERROR") ||
+         ESP_BufContains(data, len, "link is not valid")))
+    {
+        g_link_reconnect_pending = 1;
+    }
 
     // ---------------- 滑动窗口逻辑 ----------------
     // 将新数据追加到窗口，移除旧数据，保持窗口大小恒定。
@@ -955,6 +971,15 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
     if (strstr(g_stream_window, "\"command\"") && strstr(g_stream_window, "reset"))
     {
         g_server_reset_pending = 1;
+    }
+    // 滑动窗口中检测链路异常关键字
+    if (!g_link_reconnecting &&
+        (strstr(g_stream_window, "CLOSED") ||
+         strstr(g_stream_window, "CONNECT FAIL") ||
+         strstr(g_stream_window, "ERROR") ||
+         strstr(g_stream_window, "link is not valid")))
+    {
+        g_link_reconnect_pending = 1;
     }
 
     // 识别 HTTP 响应头
@@ -1220,6 +1245,8 @@ static void ESP_SoftReconnect(void)
 
     // 暂停一段时间，满足 guard time 才能退出透传
     g_esp_ready = 0;
+    g_uart2_at_mode = 1;
+    ESP_ForceStop_DMA();
     (void)HAL_UART_AbortReceive(&huart2);
 
     if (!ESP_Exit_Transparent_Mode_Strict(2000))
@@ -1251,6 +1278,7 @@ static void ESP_SoftReconnect(void)
     ESP_StreamRx_Start();
     g_last_rx_tick = HAL_GetTick();
     g_esp_ready = 1;
+    g_uart2_at_mode = 0;
     g_link_reconnecting = 0;
     ESP_Log("[ESP] 软重连完成\r\n");
 }

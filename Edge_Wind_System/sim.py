@@ -1491,6 +1491,10 @@ def test_server_connection():
         if response.status_code == 200:
             print(f"[连接测试] ✅ 服务器连接成功: {SERVER_URL}")
             return True
+        elif response.status_code == 401:
+            # 登录态不足也说明服务器可达，避免误判导致自动切换端口
+            print(f"[连接测试] ✅ 服务器可达（需要登录鉴权，HTTP 401）: {SERVER_URL}")
+            return True
         else:
             print(f"[连接测试] ⚠️  服务器响应异常: {response.status_code}")
             return False

@@ -194,7 +194,6 @@ def _lighten_channels(channels):
         })
     return out
 
-
 def init_api_blueprint(app, socketio, executor, nodes, commands):
     """初始化API蓝图的全局变量"""
     global active_nodes, node_commands, db_executor, socketio_instance, app_instance

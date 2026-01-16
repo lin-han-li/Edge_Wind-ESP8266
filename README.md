@@ -49,10 +49,18 @@ Edge_Wind_System+ESP8266/
 │
 ├─ EdgeWind_Desktop/               # Windows 桌面软件：pywebview + PyInstaller + Inno Setup
 │  ├─ run_desktop.py               # 桌面入口（启动后端子进程 + 启动 UI WebView）
-│  ├─ build_windows.bat            # 一键打包脚本（输出到 D:\Edge_Wind\...）
+│  ├─ build_windows.bat            # 一键打包脚本（输出到 D:\Edge_Wind\Admin\...）
 │  ├─ installer.iss                # Inno Setup 安装脚本
 │  ├─ make_icon.py                 # 生成真实 .ico（解决“图标白纸”）
-│  └─ EdgeWind.ico                 # 源图标（注意：该文件内容可能是 PNG，但会被 make_icon.py 封装）
+│  ├─ EdgeWind.ico                 # 默认源图标（可被 Admin.ico 覆盖）
+│  └─ Admin.ico                    # 管理员版图标（可选）
+│
+├─ EdgeWind_Client/                # Windows 客户端软件：仅 WebView2，连接远程服务器
+│  ├─ run_client.py                # 客户端入口（只打开服务器 URL）
+│  ├─ build_client.bat             # 客户端打包脚本
+│  ├─ installer_client.iss         # 客户端安装脚本
+│  ├─ edgewind_client.env          # 客户端默认配置（服务器地址）
+│  └─ Client.ico                   # 客户端图标（可选）
 │
 └─ STM32H750XBH6/                  # 下位机：STM32H750 + ESP8266
    └─ .../MDK-ARM/MOBANCX.uvprojx  # Keil 工程入口
@@ -115,8 +123,8 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 
 ### 3.1 运行方式
 
-- 直接运行 EXE（便携版）：`D:\Edge_Wind\dist\EdgeWind_Monitor.exe`
-- 或安装包安装：`D:\Edge_Wind\installer\EdgeWind_Monitor_Setup.exe`
+- 直接运行 EXE（便携版）：`D:\Edge_Wind\Admin\dist\EdgeWind_Admin.exe`
+- 或安装包安装：`D:\Edge_Wind\Admin\installer\EdgeWind_Admin_Setup.exe`
 
 ### 3.2 桌面端关键设计（与你之前遇到的坑都在这里解决）
 
@@ -126,6 +134,20 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 - **持久化 WebView2 存储**：勾选“保持登录状态”后，下次打开不再反复登录
 
 > 桌面端入口代码：`EdgeWind_Desktop/run_desktop.py`
+
+图标说明：
+- 管理员版：放置 `EdgeWind_Desktop/Admin.ico`（安装包图标可选 `Admin_setup.ico`）
+- 客户端：放置 `EdgeWind_Client/Client.ico`（安装包图标可选 `Client_setup.ico`）
+- 如果安装包提示图标过大，请用较小的 `.ico` 作为 `*_setup.ico`（例如 256x256）
+
+### 3.3 客户端版（仅 UI，不含后端/数据库）
+
+- 适用于连接远程 EdgeWind 服务器（由管理员版提供后端服务）
+- 打包脚本：`EdgeWind_Client/build_client.bat`
+- 服务器地址配置：
+  - 优先读取 exe 同目录 `edgewind_client.env`
+  - 否则读取 `%APPDATA%\EdgeWind_Client\edgewind_client.env`
+- 也可通过参数启动：`EdgeWind_Client.exe --server=http://192.168.1.10:5000`
 
 ---
 
@@ -157,7 +179,7 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 
 - 日志：`Edge_Wind_System/logs/edgewind.log`
 - 数据库（源码/服务器开关）：`Edge_Wind_System/instance/wind_farm.db`
-- 数据库（桌面 EXE）：`EdgeWind_Monitor.exe` 同目录的 `instance/wind_farm.db`
+- 数据库（桌面 EXE）：`EdgeWind_Admin.exe` 同目录的 `instance/wind_farm.db`
 
 ---
 
@@ -259,7 +281,8 @@ Socket.IO 服务在 `app.py` 初始化，事件在 `edgewind/socket_events.py` �
 
 ## 9. 打包构建（生成 EXE 与安装包）
 
-脚本：`EdgeWind_Desktop/build_windows.bat`
+脚本（管理员版）：`EdgeWind_Desktop/build_windows.bat`  
+脚本（客户端）：`EdgeWind_Client/build_client.bat`
 
 前置条件：
 - Python 3.11（推荐与运行环境一致）
@@ -269,11 +292,16 @@ Socket.IO 服务在 `app.py` 初始化，事件在 `edgewind/socket_events.py` �
 
 运行：
 - 双击 `EdgeWind_Desktop/build_windows.bat`
+- 双击 `EdgeWind_Client/build_client.bat`
 
 输出位置（已改为固定 D 盘，方便归档与交付）：
 
-- `D:\Edge_Wind\dist\EdgeWind_Monitor.exe`
-- `D:\Edge_Wind\installer\EdgeWind_Monitor_Setup.exe`
+- 管理员版：
+  - `D:\Edge_Wind\Admin\dist\EdgeWind_Admin.exe`
+  - `D:\Edge_Wind\Admin\installer\EdgeWind_Admin_Setup.exe`
+- 客户端：
+  - `D:\Edge_Wind\Client\dist\EdgeWind_Client.exe`
+  - `D:\Edge_Wind\Client\installer\EdgeWind_Client_Setup.exe`
 
 ---
 
@@ -301,7 +329,7 @@ Socket.IO 服务在 `app.py` 初始化，事件在 `edgewind/socket_events.py` �
 
 已在桌面端启用持久化存储：
 - `private_mode=False`
-- `storage_path=%LOCALAPPDATA%\EdgeWind_Monitor\webview_storage`
+- `storage_path=%LOCALAPPDATA%\EdgeWind_Admin\webview_storage`
 
 ---
 

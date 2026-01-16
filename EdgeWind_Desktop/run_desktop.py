@@ -54,7 +54,7 @@ def _webview_storage_path():
     这样“保持登录状态(remember me)”的 cookie 才能跨启动保留。
     """
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
-    path = os.path.join(base, "EdgeWind_Monitor", "webview_storage")
+    path = os.path.join(base, "EdgeWind_Admin", "webview_storage")
     try:
         os.makedirs(path, exist_ok=True)
     except Exception:
@@ -350,7 +350,7 @@ def _ensure_port_5000(host="0.0.0.0"):
 def _ensure_firewall_rule(port):
     if os.name != "nt":
         return
-    rule_name = f"EdgeWind_Monitor_{port}"
+    rule_name = f"EdgeWind_Admin_{port}"
     cmd = [
         "netsh",
         "advfirewall",
@@ -410,7 +410,7 @@ def _start_ui(port, server_proc=None, server_log_file=None):
         pass
 
     window = webview.create_window(
-        f"EdgeWind Monitor ({port})",
+        f"EdgeWind Admin ({port})",
         f"http://127.0.0.1:{port}",
         confirm_close=True,
     )
@@ -484,7 +484,7 @@ def main():
     _set_working_dir()
     port = 5000
     if not _ensure_port_5000():
-        _show_error_box("EdgeWind Monitor", "端口 5000 被占用且无法释放，请关闭占用进程后重试。")
+        _show_error_box("EdgeWind Admin", "端口 5000 被占用且无法释放，请关闭占用进程后重试。")
         return
 
     _ensure_firewall_rule(port)
@@ -494,7 +494,7 @@ def main():
     try:
         server_proc, server_log_file = _start_server_subprocess(port)
     except Exception as e:
-        _show_error_box("EdgeWind Monitor", f"启动后端服务失败：{e}")
+        _show_error_box("EdgeWind Admin", f"启动后端服务失败：{e}")
         return
 
     if not _wait_for_port(port=port, timeout=20.0):
@@ -509,7 +509,7 @@ def main():
         except Exception:
             pass
         _show_error_box(
-            "EdgeWind Monitor",
+            "EdgeWind Admin",
             "后端服务未能在 20 秒内启动（127.0.0.1:5000）。\n"
             "请查看同目录下 edgewind_server_stdout.log 获取崩溃原因。",
         )

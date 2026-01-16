@@ -204,9 +204,19 @@ EdgeWind_Desktop/build/
 
 # Generated icon wrapper (source icon stays tracked)
 EdgeWind_Desktop/EdgeWind_build.ico
+EdgeWind_Desktop/Admin_build.ico
+EdgeWind_Desktop/Admin_setup_build.ico
 
 # Desktop runtime outputs (generated at run/build time)
 EdgeWind_Desktop/edgewind_runtime.txt
 EdgeWind_Desktop/edgewind_runtime.env
 EdgeWind_Desktop/edgewind_active_nodes_debug.txt
 EdgeWind_Desktop/edgewind_server_stdout.log
+
+# -------------------------------------------------------------------
+# EdgeWind Client (pywebview only) outputs
+# -------------------------------------------------------------------
+EdgeWind_Client/installer/
+EdgeWind_Client/EdgeWind_build.ico
+EdgeWind_Client/Client_build.ico
+EdgeWind_Client/Client_setup_build.ico

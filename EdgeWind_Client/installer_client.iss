@@ -1,10 +1,10 @@
-#define AppName "EdgeWind Admin"
+#define AppName "EdgeWind Client"
 #define AppVersion "1.0.0"
 #define AppPublisher "EdgeWind Team"
 #define AppCompany "EdgeWind"
 
 ; Allow overriding dist folder from command line:
-;   ISCC /DDistDir="D:\Edge_Wind\Admin\dist" installer.iss
+;   ISCC /DDistDir="D:\Edge_Wind\Client\dist" installer_client.iss
 #ifndef DistDir
 #define DistDir "dist"
 #endif
@@ -17,11 +17,11 @@ DefaultDirName={pf}\{#AppName}
 PrivilegesRequired=lowest
 DefaultGroupName={#AppName}
 OutputDir=installer
-OutputBaseFilename=EdgeWind_Admin_Setup
+OutputBaseFilename=EdgeWind_Client_Setup
 Compression=lzma
 SolidCompression=yes
 UninstallDisplayName={#AppName}
-UninstallDisplayIcon={app}\EdgeWind_Admin.exe
+UninstallDisplayIcon={app}\EdgeWind_Client.exe
 VersionInfoVersion=1.0.0.0
 VersionInfoCompany={#AppCompany}
 VersionInfoDescription={#AppName}
@@ -34,30 +34,21 @@ SetupIconFile={#SetupIcon}
 Name: "desktopicon"; Description: "Create a desktop icon"; Flags: unchecked
 
 [Files]
-Source: "{#DistDir}\EdgeWind_Admin.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DistDir}\EdgeWind_Client.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "edgewind_client.env"; DestDir: "{userappdata}\EdgeWind_Client"; Flags: onlyifdoesntexist
 
 [Icons]
-Name: "{group}\EdgeWind Admin"; Filename: "{app}\EdgeWind_Admin.exe"
-Name: "{userdesktop}\EdgeWind Admin"; Filename: "{app}\EdgeWind_Admin.exe"; Tasks: desktopicon; Check: not IsAdminLoggedOn
-Name: "{commondesktop}\EdgeWind Admin"; Filename: "{app}\EdgeWind_Admin.exe"; Tasks: desktopicon; Check: IsAdminLoggedOn
+Name: "{group}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"
+Name: "{userdesktop}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"; Tasks: desktopicon; Check: not IsAdminLoggedOn
+Name: "{commondesktop}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"; Tasks: desktopicon; Check: IsAdminLoggedOn
 
 [Run]
-Filename: "{app}\EdgeWind_Admin.exe"; Description: "Launch EdgeWind Admin"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\EdgeWind_Client.exe"; Description: "Launch EdgeWind Client"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const
   WebView2ClientGuid = '{F1E2F1E4-FE0B-4FCD-91C8-74F4EC06F9E6}';
   WebView2DownloadUrl = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
-
-function IsPathUnder(const Path, Base: string): Boolean;
-var
-  P: string;
-  B: string;
-begin
-  P := Lowercase(AddBackslash(ExpandFileName(Path)));
-  B := Lowercase(AddBackslash(ExpandFileName(Base)));
-  Result := (Copy(P, 1, Length(B)) = B);
-end;
 
 function WebView2InstalledByRegistry(): Boolean;
 var
@@ -162,44 +153,6 @@ begin
              '下载地址：' + WebView2DownloadUrl, mbError, MB_OK);
       Result := False;
       exit;
-    end;
-  end;
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if CurStep = ssPostInstall then
-  begin
-    if not IsAdminLoggedOn then
-    begin
-      MsgBox('提示：当前未使用管理员权限安装。' + #13#10 +
-             '如需局域网设备访问，请右键以管理员身份运行一次 EdgeWind Admin，' +
-             '以便自动添加防火墙规则。', mbInformation, MB_OK);
-    end;
-  end;
-end;
-
-function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  TargetDir: string;
-begin
-  Result := True;
-  if CurPageID = wpSelectDir then
-  begin
-    TargetDir := WizardDirValue;
-    if IsPathUnder(TargetDir, ExpandConstant('{pf}')) or
-       IsPathUnder(TargetDir, ExpandConstant('{pf32}')) or
-       IsPathUnder(TargetDir, ExpandConstant('{commonpf}')) or
-       IsPathUnder(TargetDir, ExpandConstant('{win}')) or
-       IsPathUnder(TargetDir, ExpandConstant('{sys}')) then
-    begin
-      if MsgBox('当前安装目录可能不可写，数据库可能无法保存。' + #13#10 +
-                '建议选择可写目录（如 D:\Edge_Wind\EdgeWind Admin）。' + #13#10 +
-                '是否继续？', mbConfirmation, MB_YESNO) = IDNO then
-      begin
-        Result := False;
-        exit;
-      end;
     end;
   end;
 end;

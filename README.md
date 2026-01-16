@@ -143,7 +143,7 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 | 变量 | 作用 | 默认/当前 |
 |---|---|---|
 | `HOST`/`PORT` | 监听地址/端口 | `0.0.0.0:5000` |
-| `DATABASE_URL` | SQLite 数据库路径 | `sqlite:///instance/wind_farm.db` |
+| `DATABASE_URL` | SQLite 数据库路径 | 默认：`sqlite:///instance/wind_farm.db`（桌面版会覆盖到 exe 同目录） |
 | `EDGEWIND_NODE_TIMEOUT_SEC` | 节点超时时间（秒） | 默认 60 |
 | `EDGEWIND_STATUS_EMIT_HZ` | 状态推送频率（每节点 Hz） | 5 |
 | `EDGEWIND_MONITOR_EMIT_HZ` | 监控推送频率（每节点 Hz） | 20 |
@@ -156,7 +156,8 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 ### 4.2 日志与数据落点
 
 - 日志：`Edge_Wind_System/logs/edgewind.log`
-- 数据库（默认）：`Edge_Wind_System/instance/wind_farm.db`
+- 数据库（源码/服务器开关）：`Edge_Wind_System/instance/wind_farm.db`
+- 数据库（桌面 EXE）：`EdgeWind_Monitor.exe` 同目录的 `instance/wind_farm.db`
 
 ---
 

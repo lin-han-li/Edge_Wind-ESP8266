@@ -62,6 +62,23 @@ def _webview_storage_path():
     return path
 
 
+def _desktop_db_path():
+    """
+    桌面版持久化数据库路径（避免 PyInstaller 临时目录导致“每次都是新库”）。
+    位置：exe 同目录下的 instance\wind_farm.db
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "executable"):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.getcwd()
+    data_dir = os.path.join(base, "instance")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(data_dir, "wind_farm.db")
+
+
 def _show_error_box(title: str, message: str):
     # windowed exe 没有控制台，用 MessageBox 兜底提示
     if os.name != "nt":
@@ -115,6 +132,15 @@ def _desktop_socketio_env_fix():
         os.environ["FORCE_ASYNC_MODE"] = "eventlet"
         # 禁用 greendns（不需要额外依赖 dnspython）
         os.environ["EVENTLET_NO_GREENDNS"] = "yes"
+
+
+def _desktop_database_env_fix():
+    """
+    仅用于 exe：强制把数据库放到持久化目录，避免每次启动都创建新库。
+    """
+    if getattr(sys, "frozen", False):
+        db_path = _desktop_db_path().replace("\\", "/")
+        os.environ["DATABASE_URL"] = f"sqlite:///{db_path}"
 
 
 def _patch_api_light_nodes():
@@ -428,6 +454,7 @@ def _server_main():
     _load_env_file(base_dir)
     _force_light_nodes_off()
     _desktop_socketio_env_fix()
+    _desktop_database_env_fix()
     os.environ["EDGEWIND_ADMIN_USERNAME"] = ADMIN_USERNAME
     os.environ["EDGEWIND_ADMIN_INIT_PASSWORD"] = ADMIN_PASSWORD
 

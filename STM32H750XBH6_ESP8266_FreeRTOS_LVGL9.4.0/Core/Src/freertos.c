@@ -37,35 +37,8 @@
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
 #include "demos/lv_demos.h"
-#include "esp8266.h"
 
 /* USER CODE END Includes */
-
-/* USER CODE BEGIN 0 */
-void HAL_Delay(uint32_t Delay)
-{
-  if (Delay == 0U)
-  {
-    return;
-  }
-
-  uint32_t tickstart = HAL_GetTick();
-
-  if ((osKernelGetState() == osKernelRunning) && (__get_IPSR() == 0U))
-  {
-    while ((HAL_GetTick() - tickstart) < Delay)
-    {
-      osDelay(1);
-    }
-    return;
-  }
-
-  while ((HAL_GetTick() - tickstart) < Delay)
-  {
-    /* busy wait before scheduler starts or in ISR */
-  }
-}
-/* USER CODE END 0 */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
@@ -121,12 +94,11 @@ osThreadId_t ESP8266_TaskHandle;
 const osThreadAttr_t ESP8266_Task_attributes = {
   .name = "ESP8266_Task",
   .stack_size = 5128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityLow,
 };
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-extern const osMutexAttr_t Thread_Mutex_attr;
 
 /* USER CODE END FunctionPrototypes */
 
@@ -165,7 +137,6 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
-  mutex_id = osMutexNew(&Thread_Mutex_attr);
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
@@ -304,25 +275,12 @@ void StartTask03(void *argument)
 void StartTask04(void *argument)
 {
   /* USER CODE BEGIN StartTask04 */
-  osThreadId_t self = osThreadGetId();
-  if (self)
-  {
-    osThreadSetPriority(self, osPriorityAboveNormal);
-  }
-  ESP_Console_Init();
-  ESP_Init(); // 这会阻塞几秒钟进行连接
-  if (self)
-  {
-    osThreadSetPriority(self, osPriorityNormal);
-  }
+  int i;
   /* Infinite loop */
   for (;;)
   {
-    ESP_Console_Poll();
-    ESP_Update_Data_And_FFT();
-    ESP_Post_Data();
-    ESP_Post_Heartbeat();
-    osDelay(1);
+
+    osDelay(10);
   }
   /* USER CODE END StartTask04 */
 }

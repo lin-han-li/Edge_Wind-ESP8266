@@ -43,15 +43,17 @@
 #include "lv_port_indev.h"
 #include "demos/lv_demos.h"
 
+
 #include <string.h>
 #include "arm_math.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include "arm_const_structs.h"
 
+#include "Delay.h"
+#include "Delay.h"
 #include <stdio.h>
 
-#include "esp8266.h"
 
 /* USER CODE END Includes */
 
@@ -159,7 +161,8 @@ int main(void)
   LCD_RGB_Init();                          //
   Touch_Init();                            //
 
-  printf("System Start...\r\n");
+  // task heartbeat
+
 
   //  FreeRTOS
   /* USER CODE END 2 */

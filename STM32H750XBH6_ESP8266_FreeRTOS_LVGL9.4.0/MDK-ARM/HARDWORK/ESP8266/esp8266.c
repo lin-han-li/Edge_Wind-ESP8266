@@ -14,7 +14,6 @@
 #include "esp8266.h"
 #include "usart.h"
 #include "arm_math.h"
-#include "cmsis_os.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -45,14 +44,6 @@ extern UART_HandleTypeDef huart2;
 /* 辅助内联函数：用于计算对齐地址 */
 static inline uint32_t _align_down_32(uint32_t x) { return x & ~31u; }
 static inline uint32_t _align_up_32(uint32_t x) { return (x + 31u) & ~31u; }
-
-static inline void ESP_RtosYield(void)
-{
-    if ((osKernelGetState() == osKernelRunning) && (__get_IPSR() == 0U))
-    {
-        osDelay(1);
-    }
-}
 
 /**
  * @brief  Clean D-Cache (将 Cache 中的脏数据写回物理内存)
@@ -98,13 +89,6 @@ static uint8_t http_packet_buf[49152] AXI_SRAM_SECTION DMA_ALIGN32;
 /* 简单的接收缓冲，用于 AT 指令阻塞接收 (AT模式下数据量小，且使用轮询，不需要DMA) */
 static uint8_t esp_rx_buf[512];
 
-static inline uint8_t ESP_RxBusyDetected(void)
-{
-    return (strstr((char *)esp_rx_buf, "busy p") != NULL) ||
-           (strstr((char *)esp_rx_buf, "busy s") != NULL) ||
-           (strstr((char *)esp_rx_buf, "BUSY") != NULL);
-}
-
 /* 4 个通道的传感器数据结构体实例，用于存储电压、电流、FFT结果等 */
 Channel_Data_t node_channels[4];
 volatile uint8_t g_esp_ready = 0; // 全局标志：1 表示 WiFi/TCP 就绪，可以发送
@@ -118,7 +102,6 @@ static float32_t fft_mag_buf[WAVEFORM_POINTS];    // FFT 幅值数组
 /* 内部函数声明 */
 static void ESP_Log(const char *format, ...);
 static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout);
-static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char *reply2, uint32_t timeout);
 static void ESP_Clear_Error_Flags(void);
 static void Helper_FloatArray_To_String(char *dest, float *data, int count, int step);
 static void ESP_Exit_Transparent_Mode(void);
@@ -186,7 +169,6 @@ static uint8_t g_boot_hardreset_done = 0;        // 启动时是否已执行过�
  * 防止请求发送过快淹没服务器，导致 TCP 拥塞或解析错误。 */
 static volatile uint8_t g_waiting_http_response = 0;
 static volatile uint32_t g_waiting_http_tick = 0;
-static uint32_t g_last_heartbeat_tick = 0;
 
 /* 关键标志位：指示当前是否处于 AT 命令模式
  * 当处于 AT 模式（使用阻塞式 HAL_UART_Receive）时，必须禁止 DMA 中断回调逻辑介入。
@@ -393,55 +375,25 @@ void ESP_Init(void)
         }
     }
     ESP_Log("[ESP] WiFi 连接成功（已获取 IP）。\r\n");
-    HAL_Delay(1200);
-    ESP_Uart2_Drain(200);
     // 打印 STA IP 信息（便于确认是否进到目标网段）
-    for (int k = 0; k < 3; k++)
-    {
-        if (ESP_Send_Cmd("AT+CIFSR\r\n", "STAIP", 3000))
-        {
-            break;
-        }
-        ESP_Log("[ESP] CIFSR 无响应/忙，准备重试...\r\n");
-        HAL_Delay(600);
-    }
+    ESP_Send_Cmd("AT+CIFSR\r\n", "OK", 2000);
     ESP_Log_RxBuf("CIFSR");
 
     /* TCP 连接 */
-    // 先关闭可能存在的旧连接（无连接时可能返回 ERROR，视为成功）
-    (void)ESP_Send_Cmd_Any("AT+CIPCLOSE\r\n", "OK", "ERROR", 500);
+    ESP_Send_Cmd("AT+CIPCLOSE\r\n", "OK", 500); // 先关闭可能存在的旧连接
     sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", SERVER_IP, SERVER_PORT);
-    uint8_t tcp_ok = 0;
-    for (int k = 0; k < 3; k++)
+    if (!ESP_Send_Cmd(cmd_buf, "CONNECT", 10000))
     {
-        if (ESP_Send_Cmd(cmd_buf, "CONNECT", 10000))
-        {
-            tcp_ok = 1;
-            break;
-        }
         // 如果返回 ALREADY，说明连接还在，也算成功
-        if (strstr((char *)esp_rx_buf, "ALREADY") != NULL)
+        if (strstr((char *)esp_rx_buf, "ALREADY") == NULL)
         {
-            tcp_ok = 1;
-            break;
+            ESP_Log("[ESP] TCP 连接失败。\r\n");
+            ESP_Log_RxBuf("TCP_FAIL");
+            return;
         }
-        if (ESP_RxBusyDetected())
-        {
-            ESP_Log("[ESP] CIPSTART busy，等待后重试...\r\n");
-            HAL_Delay(800);
-            continue;
-        }
-        ESP_Log("[ESP] CIPSTART 失败，准备重试...\r\n");
-        HAL_Delay(800);
-    }
-    if (!tcp_ok)
-    {
-        ESP_Log("[ESP] TCP 连接失败。\r\n");
-        ESP_Log_RxBuf("TCP_FAIL");
-        return;
     }
     ESP_Log("[ESP] TCP 连接成功（CONNECT）。\r\n");
-    (void)ESP_Send_Cmd_Any("AT+CIPSTATUS\r\n", "STATUS:", "OK", 1000);
+    ESP_Send_Cmd("AT+CIPSTATUS\r\n", "OK", 1000);
     ESP_Log_RxBuf("CIPSTATUS");
 
     // 开启透传模式 (UART <-> WiFi 透明传输)
@@ -779,9 +731,9 @@ void ESP_Post_Data(void)
 
     // 5Hz 发送频率限制
     static uint32_t last_send_time = 0;
-    uint32_t now_tick = HAL_GetTick();
-    if (now_tick - last_send_time < 200)
+    if (HAL_GetTick() - last_send_time < 200)
         return;
+    last_send_time = HAL_GetTick();
 
     // 开始构建 JSON
     char *p = (char *)http_packet_buf;
@@ -860,11 +812,9 @@ void ESP_Post_Data(void)
 
     if (st == HAL_OK)
     {
-        last_send_time = now_tick;
         // 标记开始等待回包
         g_waiting_http_response = 1;
-        g_waiting_http_tick = now_tick;
-        g_last_heartbeat_tick = now_tick;
+        g_waiting_http_tick = HAL_GetTick();
     }
 
 #if (ESP_DEBUG)
@@ -880,50 +830,6 @@ void ESP_Post_Data(void)
                 (int)g_usart2_rx_started);
     }
 #endif
-}
-
-void ESP_Post_Heartbeat(void)
-{
-    if (g_esp_ready == 0)
-        return;
-    if (g_waiting_http_response)
-        return;
-
-    uint32_t now = HAL_GetTick();
-    if (now - g_last_heartbeat_tick < ESP_HEARTBEAT_INTERVAL_MS)
-        return;
-
-    HAL_UART_StateTypeDef st = HAL_UART_GetState(&huart2);
-    if (st == HAL_UART_STATE_BUSY_TX || st == HAL_UART_STATE_BUSY_TX_RX)
-        return;
-
-    char body[128];
-    char req[256];
-    int body_len = snprintf(body, sizeof(body),
-                            "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"channels\":[]}",
-                            NODE_ID, g_fault_code);
-    if (body_len <= 0 || body_len >= (int)sizeof(body))
-        return;
-    int req_len = snprintf(req, sizeof(req),
-                           "POST /api/node/heartbeat HTTP/1.1\r\n"
-                           "Host: %s:%d\r\n"
-                           "Content-Type: application/json\r\n"
-                           "Content-Length: %d\r\n"
-                           "\r\n"
-                           "%s",
-                           SERVER_IP, SERVER_PORT, body_len, body);
-    if (req_len <= 0 || req_len >= (int)sizeof(req))
-        return;
-
-    if (HAL_UART_Transmit(&huart2, (uint8_t *)req, (uint16_t)req_len, 200) == HAL_OK)
-    {
-        g_waiting_http_response = 1;
-        g_waiting_http_tick = now;
-        g_last_heartbeat_tick = now;
-#if (ESP_DEBUG)
-        ESP_Log("[调试] Heartbeat sent len=%d\r\n", req_len);
-#endif
-    }
 }
 
 // ---------------- 串口 RX 回调：调试串口输入 E01/E00 注入/清除故障 ----------------
@@ -1225,10 +1131,6 @@ void ESP_Register(void)
                 break;
             }
         }
-        else
-        {
-            ESP_RtosYield();
-        }
     }
     if (idx == 0)
     {
@@ -1277,10 +1179,6 @@ static uint8_t ESP_Wait_Keyword(const char *kw, uint32_t timeout_ms)
             }
             if (strstr((char *)esp_rx_buf, kw))
                 return 1;
-        }
-        else
-        {
-            ESP_RtosYield();
         }
     }
     return 0;
@@ -1422,7 +1320,6 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
 {
     uint32_t start;
     uint16_t idx = 0;
-    uint8_t busy_hits = 0;
     ESP_Clear_Error_Flags();
     memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
 
@@ -1457,97 +1354,11 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
 #endif
                     return 1;
                 }
-                if (ESP_RxBusyDetected())
-                {
-                    busy_hits++;
-#if (ESP_DEBUG)
-                    ESP_Log("[ESP] 模组忙(busy)，等待中...\r\n");
-#endif
-                    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-                    idx = 0;
-                    HAL_Delay(200);
-                    if (busy_hits <= 3)
-                    {
-                        start = HAL_GetTick();
-                    }
-                }
             }
-        }
-        else
-        {
-            ESP_RtosYield();
         }
     }
 #if (ESP_DEBUG)
     ESP_Log("[ESP 超时] 等待关键字: %s\r\n", reply);
-    ESP_Log_RxBuf("TIMEOUT");
-#endif
-    return 0;
-}
-
-static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char *reply2, uint32_t timeout)
-{
-    uint32_t start;
-    uint16_t idx = 0;
-    uint8_t busy_hits = 0;
-    ESP_Clear_Error_Flags();
-    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-
-#if (ESP_DEBUG)
-    if (cmd && (strncmp(cmd, "AT+CWJAP=", 9) == 0))
-    {
-        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", WIFI_SSID);
-    }
-    else if (cmd)
-    {
-        ESP_Log("[ESP 指令] >> %s", cmd);
-    }
-#endif
-
-    HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100);
-    start = HAL_GetTick();
-    while ((HAL_GetTick() - start) < timeout)
-    {
-        uint8_t ch;
-        if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
-        {
-            if (idx < sizeof(esp_rx_buf) - 1)
-            {
-                esp_rx_buf[idx++] = ch;
-                esp_rx_buf[idx] = 0;
-                if ((reply1 && strstr((char *)esp_rx_buf, reply1)) ||
-                    (reply2 && strstr((char *)esp_rx_buf, reply2)))
-                {
-#if (ESP_DEBUG)
-                    ESP_Log("[ESP 期望] << %s%s\r\n", reply1 ? reply1 : "",
-                            reply2 ? " / alt" : "");
-#endif
-                    return 1;
-                }
-                if (ESP_RxBusyDetected())
-                {
-                    busy_hits++;
-#if (ESP_DEBUG)
-                    ESP_Log("[ESP] 模组忙(busy)，等待中...\r\n");
-#endif
-                    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
-                    idx = 0;
-                    HAL_Delay(200);
-                    if (busy_hits <= 3)
-                    {
-                        start = HAL_GetTick();
-                    }
-                }
-            }
-        }
-        else
-        {
-            ESP_RtosYield();
-        }
-    }
-#if (ESP_DEBUG)
-    ESP_Log("[ESP 超时] 等待关键字: %s%s%s\r\n", reply1 ? reply1 : "",
-            reply2 ? " / " : "", reply2 ? reply2 : "");
     ESP_Log_RxBuf("TIMEOUT");
 #endif
     return 0;

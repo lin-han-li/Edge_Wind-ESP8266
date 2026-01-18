@@ -1,0 +1,68 @@
+# =========
+# General
+# =========
+*~
+*.swp
+*.tmp
+*.temp
+*.bak
+*.log
+.DS_Store
+Thumbs.db
+
+# =========
+# VS/IDE
+# =========
+.vscode/
+.vs/
+*.user
+*.suo
+*.ncb
+*.opendb
+*.VC.db
+
+# =========
+# Keil MDK-ARM / uVision
+# =========
+*.uvoptx
+*.uvopt
+*.uvguix
+*.uvguix.*
+*.uvmpw
+*.uvproj
+*.uvgui.*
+*.scvd
+
+# Build output folders (project-name dependent)
+MDK-ARM/**/Objects/
+MDK-ARM/**/Listings/
+MDK-ARM/**/RTE/_Target_*/
+
+# This repo contains a large Keil build output folder here; never commit it
+MDK-ARM/STM32H750XBH6/
+
+# =========
+# Toolchain artifacts
+# =========
+*.o
+*.obj
+*.a
+*.lib
+*.d
+*.dep
+*.crf
+*.lst
+*.map
+*.htm
+*.axf
+*.elf
+*.out
+*.hex
+*.bin
+
+# =========
+# CMake / build dirs (in case you add them later)
+# =========
+build/
+cmake-build-*/
+

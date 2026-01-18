@@ -67,6 +67,10 @@ extern "C"
 #define ESP_NO_SERVER_RX_HARDRESET_SEC 6
 #endif
 
+#ifndef ESP_HEARTBEAT_INTERVAL_MS
+#define ESP_HEARTBEAT_INTERVAL_MS 5000
+#endif
+
 // 数据采样与发送参数
 #define WAVEFORM_POINTS 1024 // 本地模拟生成的波形点数 (用于高精度 FFT 计算)
 /* * ⚠️ 关键参数 WAVEFORM_SEND_STEP:
@@ -105,6 +109,7 @@ extern "C"
     void ESP_Init(void);                // 初始化 ESP8266 (AT指令序列)
     void ESP_Update_Data_And_FFT(void); // 更新模拟数据并计算 FFT
     void ESP_Post_Data(void);           // 打包 JSON 并通过 HTTP POST 发送
+    void ESP_Post_Heartbeat(void);      // 发送最小心跳包（保活）
     void ESP_Register(void);            // 向服务器注册节点信息
     void ESP_Console_Init(void);        // 初始化调试控制台中断
     void ESP_Console_Poll(void);        // 在主循环中轮询控制台输入

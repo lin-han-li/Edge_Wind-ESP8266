@@ -299,7 +299,9 @@ void SystemInit (void)
 
 #endif /*DUAL_CORE && CORE_CM4*/
 
-	SCB->VTOR = 0X90000000;       /* Vector Table Relocation in External Flash */
+#ifdef EXT_Flash_SPI
+	SCB->VTOR = 0X90000000;       /* Vector Table Relocation in SDRAM */
+#endif
 }
 
 /**

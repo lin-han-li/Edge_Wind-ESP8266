@@ -6,6 +6,7 @@ import subprocess
 import re
 import importlib
 import traceback
+import ipaddress
 
 from jinja2 import FileSystemLoader
 import webview
@@ -87,6 +88,17 @@ def _show_error_box(title: str, message: str):
         import ctypes
 
         ctypes.windll.user32.MessageBoxW(None, str(message), str(title), 0x10)
+    except Exception:
+        pass
+
+
+def _show_info_box(title: str, message: str):
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(None, str(message), str(title), 0x40)
     except Exception:
         pass
 
@@ -371,35 +383,135 @@ def _ensure_firewall_rule(port):
         print("Firewall rule add failed. Run as admin to allow LAN access.")
 
 
-def _get_lan_ip():
+def _is_valid_lan_ip(ip: str) -> bool:
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-        sock.close()
-        return ip
-    except OSError:
-        return "127.0.0.1"
+        ip_obj = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    if ip_obj.version != 4:
+        return False
+    if ip in ("127.0.0.1", "0.0.0.0"):
+        return False
+    if ip.startswith("169.254."):
+        return False
+    return True
+
+
+def _ips_from_ipconfig():
+    ips = []
+    try:
+        result = subprocess.run(["ipconfig"], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return ips
+        pattern = re.compile(r"(IPv4.*地址|IPv4 Address)[^:]*:\s*([\d\.]+)")
+        for line in result.stdout.splitlines():
+            m = pattern.search(line)
+            if m:
+                ip = m.group(2).strip()
+                if _is_valid_lan_ip(ip):
+                    ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def _ips_from_socket():
+    ips = []
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if _is_valid_lan_ip(ip):
+                ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def _get_lan_ips():
+    ips = []
+    ips.extend(_ips_from_ipconfig())
+    if not ips:
+        ips.extend(_ips_from_socket())
+    if not ips:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.connect(("8.8.8.8", 80))
+            ip = sock.getsockname()[0]
+            sock.close()
+            if _is_valid_lan_ip(ip):
+                ips.append(ip)
+        except OSError:
+            pass
+
+    uniq = []
+    seen = set()
+    for ip in ips:
+        if ip not in seen:
+            seen.add(ip)
+            uniq.append(ip)
+
+    def _rank(addr: str) -> int:
+        if addr.startswith("192.168."):
+            return 0
+        if addr.startswith("10."):
+            return 1
+        if addr.startswith("172."):
+            try:
+                second = int(addr.split(".")[1])
+                if 16 <= second <= 31:
+                    return 2
+            except Exception:
+                pass
+        return 3
+
+    return sorted(uniq, key=lambda ip: (_rank(ip), ip))
 
 
 def _write_runtime_info(port):
-    lan_ip = _get_lan_ip()
+    lan_ips = _get_lan_ips()
+    primary_ip = lan_ips[0] if lan_ips else "127.0.0.1"
+    if lan_ips:
+        lan_lines = "\n".join([f"  - http://{ip}:{port}" for ip in lan_ips])
+    else:
+        lan_lines = "  (not detected)"
     content = (
         "EdgeWind Runtime Info\n"
         f"Local URL: http://127.0.0.1:{port}\n"
-        f"LAN URL:   http://{lan_ip}:{port}\n"
+        "LAN URLs:\n"
+        f"{lan_lines}\n"
         "\n"
         "ESP8266 settings:\n"
-        f"  SERVER_IP   \"{lan_ip}\"\n"
+        f"  SERVER_IP   \"{primary_ip}\"\n"
         f"  SERVER_PORT {port}\n"
         "\n"
-        "Note: If LAN IP is 127.0.0.1, check your network connection.\n"
+        "Note: Choose the IP in the same subnet as your ESP8266.\n"
     )
+    if not lan_ips:
+        content += "Note: LAN IP not detected. Check network adapters.\n"
     try:
         with open("edgewind_runtime.txt", "w", encoding="utf-8") as f:
             f.write(content)
     except Exception:
         pass
+
+
+def _show_runtime_info_popup(port):
+    lan_ips = _get_lan_ips()
+    primary_ip = lan_ips[0] if lan_ips else "127.0.0.1"
+    if lan_ips:
+        lan_lines = "\n".join([f"  - http://{ip}:{port}" for ip in lan_ips])
+    else:
+        lan_lines = "  (not detected)"
+    message = (
+        f"本机访问：http://127.0.0.1:{port}\n\n"
+        "局域网可用地址：\n"
+        f"{lan_lines}\n\n"
+        "ESP8266 设置：\n"
+        f'  SERVER_IP   "{primary_ip}"\n'
+        f"  SERVER_PORT {port}\n\n"
+        "请选与设备同网段的 IP。"
+    )
+    _show_info_box("EdgeWind Admin", message)
 
 
 def _start_ui(port, server_proc=None, server_log_file=None):
@@ -489,6 +601,7 @@ def main():
 
     _ensure_firewall_rule(port)
     _write_runtime_info(port)
+    _show_runtime_info_popup(port)
 
     # 启动 server 子进程并等待端口 ready
     try:

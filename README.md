@@ -3,7 +3,7 @@
 本仓库是一个“上位机 Web/桌面端 + 下位机固件”的完整工程集合，用于 **风电场直流系统故障监测与智能诊断**。
 
 - **上位机后端 + Web 前端**：`Edge_Wind_System/`（Flask + Socket.IO + SQLite + Bootstrap/ECharts）
-- **下位机固件**：`STM32H750XBH6/`（STM32H750 + ESP8266，HTTP 透传上报）
+- **下位机固件**：`STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0/`（STM32H750 + ESP8266 + FreeRTOS + LVGL 9.4.0，HTTP 透传上报）
 - **Windows 桌面软件工程**：`EdgeWind_Desktop/`（pywebview + PyInstaller + Inno Setup）
 
 ---
@@ -62,8 +62,8 @@ Edge_Wind_System+ESP8266/
 │  ├─ edgewind_client.env          # 客户端默认配置（服务器地址）
 │  └─ Client.ico                   # 客户端图标（可选）
 │
-└─ STM32H750XBH6/                  # 下位机：STM32H750 + ESP8266
-   └─ .../MDK-ARM/MOBANCX.uvprojx  # Keil 工程入口
+└─ STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0/        # 下位机：STM32H750 + ESP8266 + FreeRTOS + LVGL 9.4.0
+   └─ MDK-ARM/STM32H750XBH6.uvprojx                 # Keil 工程入口
 ```
 
 ---

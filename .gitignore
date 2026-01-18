@@ -32,7 +32,10 @@ env.bak/
 venv.bak/
 
 # Flask
-instance/
+# 只忽略后端运行时生成的 instance 目录（避免误伤固件/LVGL 中的 instance 源码目录）
+Edge_Wind_System/instance/
+EdgeWind_Desktop/instance/
+EdgeWind_Client/instance/
 .webassets-cache
 *.db
 *.db-shm

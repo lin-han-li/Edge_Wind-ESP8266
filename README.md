@@ -331,6 +331,25 @@ Socket.IO 服务在 `app.py` 初始化，事件在 `edgewind/socket_events.py` �
 - `private_mode=False`
 - `storage_path=%LOCALAPPDATA%\EdgeWind_Admin\webview_storage`
 
+### 10.5 Keil 编译报错：`lv_cache_instance.h` / `lv_image_cache.c` 找不到（LVGL 9.4.0）
+
+现象（典型报错）：
+- `../lvgl-9.4.0/src/misc/cache/lv_cache.h: 'instance/lv_cache_instance.h' file not found`
+- `armclang: error: no such file or directory: '../lvgl-9.4.0/src/misc/cache/instance/lv_image_cache.c'`
+
+原因：
+- LVGL 9.4.0 的缓存模块会 `#include "instance/lv_cache_instance.h"`，并且工程里也会编译 `src/misc/cache/instance/*.c`。
+- 这些文件必须真实存在于仓库目录：`STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0/lvgl-9.4.0/src/misc/cache/instance/`
+- 本仓库早期的根目录 `.gitignore` 曾误写了全局 `instance/`，会把 **LVGL 源码里的 `instance/` 目录**一起忽略，导致“你 clone/下载后缺文件 → 无法编译”。
+
+解决：
+- **务必用 `git clone`，不要用 GitHub 网页“Download ZIP”**（Windows 下可能触发路径长度限制，导致部分文件没解压出来）。
+- 更新到最新版本后，确认下面这些文件存在：
+  - `lv_cache_instance.h`
+  - `lv_image_cache.c`
+  - `lv_image_header_cache.c`
+- 如果你是仓库维护者：确保根目录 `.gitignore` 不再全局忽略 `instance/`（而是只忽略 `Edge_Wind_System/instance/` 等运行时目录）。
+
 ---
 
 ## 11. 运维与维护（重置密码/清理数据）

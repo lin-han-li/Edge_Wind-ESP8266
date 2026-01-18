@@ -94,7 +94,7 @@ osThreadId_t ESP8266_TaskHandle;
 const osThreadAttr_t ESP8266_Task_attributes = {
   .name = "ESP8266_Task",
   .stack_size = 5128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/

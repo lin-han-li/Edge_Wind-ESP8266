@@ -536,29 +536,32 @@
         /* ========== Toast 通知样式 ========== */
         .toast-container {
             position: fixed;
-            bottom: 20px;
-            right: 20px;
+            /* 顶部居中：比右下角更醒目，且不遮挡左侧导航 */
+            top: 88px; /* 避开 topbar（sticky） */
+            left: 50%;
+            transform: translateX(-50%);
             z-index: 9999;
             display: flex;
             flex-direction: column;
             gap: 10px;
+            /* 放大两倍视觉尺寸：更宽、更醒目 */
+            width: min(900px, calc(100% - 24px));
             /* 避免遮挡页面交互，但允许 Toast 自身可点击 */
             pointer-events: none;
         }
         
         .custom-toast {
             background: #fff;
-            border-radius: 8px;
-            padding: 12px 20px;
+            border-radius: 12px;
+            padding: 22px 28px;
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            margin-bottom: 10px;
             border-left: 4px solid #28a745;
             animation: slideIn 0.3s ease;
-            min-width: 300px;
-            max-width: 400px;
+            width: 100%;
+            min-height: 76px;
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 16px;
             pointer-events: auto;
         }
         
@@ -579,7 +582,7 @@
         }
         
         .custom-toast-icon {
-            font-size: 20px;
+            font-size: 28px;
             flex-shrink: 0;
         }
         
@@ -595,16 +598,17 @@
         }
         
         .custom-toast-message {
-            font-size: 13px;
+            font-size: 16px;
             color: #64748b;
+            line-height: 1.45;
         }
         
         .custom-toast-close {
             cursor: pointer;
             color: #94a3b8;
-            font-size: 18px;
+            font-size: 24px;
             flex-shrink: 0;
-            padding: 4px;
+            padding: 6px;
             line-height: 1;
             pointer-events: auto;
         }
@@ -615,22 +619,22 @@
         
         @keyframes slideIn {
             from {
-                transform: translateX(100%);
+                transform: translateY(-12px);
                 opacity: 0;
             }
             to {
-                transform: translateX(0);
+                transform: translateY(0);
                 opacity: 1;
             }
         }
         
         @keyframes slideOut {
             from {
-                transform: translateX(0);
+                transform: translateY(0);
                 opacity: 1;
             }
             to {
-                transform: translateX(100%);
+                transform: translateY(-12px);
                 opacity: 0;
             }
         }
@@ -1386,7 +1390,7 @@
                 toast.offsetHeight; // 触发重排
                 // 直接设置样式，避免CSS动画延迟
                 toast.style.opacity = '1';
-                toast.style.transform = 'translateX(0)';
+                toast.style.transform = 'translateY(0)';
             });
             
             // 自动移除（5秒后）

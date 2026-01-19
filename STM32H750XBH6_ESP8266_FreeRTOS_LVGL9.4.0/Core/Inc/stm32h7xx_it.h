@@ -61,6 +61,7 @@ void USART1_IRQHandler(void);
 void USART2_IRQHandler(void);
 void SDMMC1_IRQHandler(void);
 void LTDC_IRQHandler(void);
+void QUADSPI_IRQHandler(void);
 void TIM17_IRQHandler(void);
 void MDMA_IRQHandler(void);
 /* USER CODE BEGIN EFP */

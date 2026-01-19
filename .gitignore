@@ -132,13 +132,29 @@ logs/*.log
 *.out
 *.map
 
-# 编译中间产物（只忽略 MDK-ARM/MOBANCX/ 子目录下的，避免误删源码）
-**/MDK-ARM/**/MOBANCX/**/*.lst
-**/MDK-ARM/**/MOBANCX/**/*.d
-**/MDK-ARM/**/MOBANCX/**/*.o
-**/MDK-ARM/**/MOBANCX/**/*.obj
-**/MDK-ARM/**/MOBANCX/**/*.crf
-**/MDK-ARM/**/MOBANCX/**/*.dep
+# Keil/MDK 编译中间产物（全工程通用）
+**/MDK-ARM/**/Objects/
+**/MDK-ARM/**/Listings/
+**/MDK-ARM/**/.dep/
+**/MDK-ARM/**/RTE/
+**/MDK-ARM/**/DebugConfig/
+
+**/MDK-ARM/**/*.d
+**/MDK-ARM/**/*.o
+**/MDK-ARM/**/*.obj
+**/MDK-ARM/**/*.crf
+**/MDK-ARM/**/*.dep
+**/MDK-ARM/**/*.lst
+**/MDK-ARM/**/*.bak
+**/MDK-ARM/**/*.htm
+
+# Keil 工程生成的 GUI/用户态文件（不影响源码编译）
+**/MDK-ARM/**/*.uvguix.*
+**/MDK-ARM/**/*.uvgui.*
+**/MDK-ARM/**/*.uvoptx
+**/MDK-ARM/**/*_build_log.htm
+**/MDK-ARM/**/*build_log*.htm
+**/MDK-ARM/**/*build_log*.txt
 
 # 其他编译产物
 *.su
@@ -147,12 +163,7 @@ logs/*.log
 *.lib
 *.pdb
 
-# Keil 调试/配置文件
-**/MDK-ARM/**/Objects/
-**/MDK-ARM/**/Listings/
-**/MDK-ARM/**/.dep/
-**/MDK-ARM/**/RTE/
-**/MDK-ARM/**/DebugConfig/
+# Keil 调试/配置文件（全局）
 *.uvoptx
 JLinkLog.txt
 JLinkSettings.ini
@@ -171,6 +182,10 @@ JLinkSettings.ini
 
 # esp8266_config.h：你说这是私人仓库、希望 clone 后固件侧也能直接编译运行
 # 所以这里不再忽略 esp8266_config.h（会提交到仓库）
+
+# W25Q256：确保驱动源码永远不被误忽略（即使未来有人加了更宽泛的忽略规则）
+!**/HARDWORK/W25Q256/
+!**/HARDWORK/W25Q256/**
 
 # Gemini 临时打包目录（如存在）
 Gemini_Edge_Wind_code/

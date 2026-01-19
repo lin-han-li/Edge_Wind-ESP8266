@@ -57,6 +57,8 @@
 /* External variables --------------------------------------------------------*/
 extern LTDC_HandleTypeDef hltdc;
 extern MDMA_HandleTypeDef hmdma_mdma_channel0_sdmmc1_end_data_0;
+extern MDMA_HandleTypeDef hmdma_quadspi_fifo_th;
+extern QSPI_HandleTypeDef hqspi;
 extern SD_HandleTypeDef hsd1;
 extern TIM_HandleTypeDef htim3;
 extern DMA_HandleTypeDef hdma_usart1_rx;
@@ -296,6 +298,20 @@ void LTDC_IRQHandler(void)
 }
 
 /**
+  * @brief This function handles QUADSPI global interrupt.
+  */
+void QUADSPI_IRQHandler(void)
+{
+  /* USER CODE BEGIN QUADSPI_IRQn 0 */
+
+  /* USER CODE END QUADSPI_IRQn 0 */
+  HAL_QSPI_IRQHandler(&hqspi);
+  /* USER CODE BEGIN QUADSPI_IRQn 1 */
+
+  /* USER CODE END QUADSPI_IRQn 1 */
+}
+
+/**
   * @brief This function handles TIM17 global interrupt.
   */
 void TIM17_IRQHandler(void)
@@ -318,6 +334,7 @@ void MDMA_IRQHandler(void)
 
   /* USER CODE END MDMA_IRQn 0 */
   HAL_MDMA_IRQHandler(&hmdma_mdma_channel0_sdmmc1_end_data_0);
+  HAL_MDMA_IRQHandler(&hmdma_quadspi_fifo_th);
   /* USER CODE BEGIN MDMA_IRQn 1 */
 
   /* USER CODE END MDMA_IRQn 1 */

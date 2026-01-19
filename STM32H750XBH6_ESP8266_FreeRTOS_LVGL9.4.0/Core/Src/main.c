@@ -25,6 +25,7 @@
 #include "ltdc.h"
 #include "mdma.h"
 #include "memorymap.h"
+#include "quadspi.h"
 #include "rtc.h"
 #include "sdmmc.h"
 #include "tim.h"
@@ -150,6 +151,7 @@ int main(void)
   MX_RTC_Init();
   MX_TIM16_Init();
   MX_USART2_UART_Init();
+  MX_QUADSPI_Init();
   /* USER CODE BEGIN 2 */
   //		Stack_Size      EQU     0x00000400 //
   //		Stack_Size      EQU     0x0000FF00

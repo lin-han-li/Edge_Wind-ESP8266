@@ -38,10 +38,14 @@
 #include "lv_port_indev.h"
 #include "demos/lv_demos.h"
 #include "esp8266.h"
+#include "qspi_w25q256.h"
+#include <string.h>
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
-/* USER CODE BEGIN 0 */
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
 void HAL_Delay(uint32_t Delay)
 {
   if (Delay == 0U)
@@ -65,11 +69,6 @@ void HAL_Delay(uint32_t Delay)
     /* busy wait before scheduler starts or in ISR */
   }
 }
-/* USER CODE END 0 */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -80,14 +79,72 @@ void HAL_Delay(uint32_t Delay)
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
-// 任务·4
-extern int AD9248_flag;
-extern float AD9248_OrgSig[4096];
-float Value, Value2;
-uint16_t mask = 1 << 13;
-uint16_t Bit15[4096];
-uint16_t INA[4096];
-uint16_t INB[4096];
+#ifndef W25Q256_SELFTEST_ENABLE
+#define W25Q256_SELFTEST_ENABLE 1
+#endif
+
+#define W25Q256_SELFTEST_ADDR   (0x1FF0000u) /* 32MB Flash 末尾附近，避开常用数据区 */
+#define W25Q256_SELFTEST_LEN    (256u)       /* 单页测试 */
+
+static int8_t W25Q256_SelfTest_Small(void)
+{
+  uint8_t tx[W25Q256_SELFTEST_LEN];
+  uint8_t rx[W25Q256_SELFTEST_LEN];
+  uint32_t id;
+  int8_t ret;
+
+  ret = QSPI_W25Qxx_Init();
+  id  = QSPI_W25Qxx_ReadID();
+  printf("[W25Q256] init ret=%d, JEDEC=0x%06lX\r\n", (int)ret, (unsigned long)id);
+  if (ret != QSPI_W25Qxx_OK)
+  {
+    return ret;
+  }
+
+  ret = QSPI_W25Qxx_SectorErase(W25Q256_SELFTEST_ADDR);
+  printf("[W25Q256] sector erase @0x%08lX ret=%d\r\n", (unsigned long)W25Q256_SELFTEST_ADDR, (int)ret);
+  if (ret != QSPI_W25Qxx_OK)
+  {
+    return ret;
+  }
+
+  for (uint32_t i = 0; i < W25Q256_SELFTEST_LEN; i++)
+  {
+    tx[i] = (uint8_t)(i ^ 0xA5u);
+    rx[i] = 0;
+  }
+
+  ret = QSPI_W25Qxx_WritePage(tx, W25Q256_SELFTEST_ADDR, (uint16_t)W25Q256_SELFTEST_LEN);
+  printf("[W25Q256] write page ret=%d\r\n", (int)ret);
+  if (ret != QSPI_W25Qxx_OK)
+  {
+    return ret;
+  }
+
+  ret = QSPI_W25Qxx_ReadBuffer(rx, W25Q256_SELFTEST_ADDR, W25Q256_SELFTEST_LEN);
+  printf("[W25Q256] read back ret=%d\r\n", (int)ret);
+  if (ret != QSPI_W25Qxx_OK)
+  {
+    return ret;
+  }
+
+  if (memcmp(tx, rx, W25Q256_SELFTEST_LEN) != 0)
+  {
+    for (uint32_t i = 0; i < W25Q256_SELFTEST_LEN; i++)
+    {
+      if (tx[i] != rx[i])
+      {
+        printf("[W25Q256] verify FAIL @+%lu tx=0x%02X rx=0x%02X\r\n",
+               (unsigned long)i, (unsigned int)tx[i], (unsigned int)rx[i]);
+        break;
+      }
+    }
+    return (int8_t)W25Qxx_ERROR_TRANSMIT;
+  }
+
+  printf("[W25Q256] selftest PASS (erase+program+readback)\r\n");
+  return QSPI_W25Qxx_OK;
+}
 
 /* USER CODE END PM */
 
@@ -95,33 +152,33 @@ uint16_t INB[4096];
 /* USER CODE BEGIN Variables */
 
 /* USER CODE END Variables */
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
+/* Definitions for LVGL940 */
+osThreadId_t LVGL940Handle;
+const osThreadAttr_t LVGL940_attributes = {
+  .name = "LVGL940",
   .stack_size = 2048 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for ledTask */
-osThreadId_t ledTaskHandle;
-const osThreadAttr_t ledTask_attributes = {
-  .name = "ledTask",
+/* Definitions for LED */
+osThreadId_t LEDHandle;
+const osThreadAttr_t LED_attributes = {
+  .name = "LED",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for uartTask */
-osThreadId_t uartTaskHandle;
-const osThreadAttr_t uartTask_attributes = {
-  .name = "uartTask",
+/* Definitions for Main */
+osThreadId_t MainHandle;
+const osThreadAttr_t Main_attributes = {
+  .name = "Main",
   .stack_size = 30000 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
-/* Definitions for ESP8266_Task */
-osThreadId_t ESP8266_TaskHandle;
-const osThreadAttr_t ESP8266_Task_attributes = {
-  .name = "ESP8266_Task",
+/* Definitions for ESP8266 */
+osThreadId_t ESP8266Handle;
+const osThreadAttr_t ESP8266_attributes = {
+  .name = "ESP8266",
   .stack_size = 5128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -130,10 +187,10 @@ extern const osMutexAttr_t Thread_Mutex_attr;
 
 /* USER CODE END FunctionPrototypes */
 
-void StartDefaultTask(void *argument);
-void StartTask02(void *argument);
-void StartTask03(void *argument);
-void StartTask04(void *argument);
+void LVGL_Task(void *argument);
+void LED_Task(void *argument);
+void Main_Task(void *argument);
+void ESP8266_Task(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -181,17 +238,17 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  /* creation of LVGL940 */
+  LVGL940Handle = osThreadNew(LVGL_Task, NULL, &LVGL940_attributes);
 
-  /* creation of ledTask */
-  ledTaskHandle = osThreadNew(StartTask02, NULL, &ledTask_attributes);
+  /* creation of LED */
+  LEDHandle = osThreadNew(LED_Task, NULL, &LED_attributes);
 
-  /* creation of uartTask */
-  uartTaskHandle = osThreadNew(StartTask03, NULL, &uartTask_attributes);
+  /* creation of Main */
+  MainHandle = osThreadNew(Main_Task, NULL, &Main_attributes);
 
-  /* creation of ESP8266_Task */
-  ESP8266_TaskHandle = osThreadNew(StartTask04, NULL, &ESP8266_Task_attributes);
+  /* creation of ESP8266 */
+  ESP8266Handle = osThreadNew(ESP8266_Task, NULL, &ESP8266_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -203,16 +260,16 @@ void MX_FREERTOS_Init(void) {
 
 }
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_LVGL_Task */
 /**
- * @brief  Function implementing the defaultTask thread.
- * @param  argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
+  * @brief  Function implementing the LVGL940 thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_LVGL_Task */
+void LVGL_Task(void *argument)
 {
-  /* USER CODE BEGIN StartDefaultTask */
+  /* USER CODE BEGIN LVGL_Task */
   uint32_t time;
   //  // LVGL图形库初始化三件套
   lv_init();            // 初始化LVGL核心库（内存管理、内部变量等）
@@ -224,7 +281,7 @@ void StartDefaultTask(void *argument)
   //  setup_ui(&guider_ui);    // 创建UI组件（按钮/标签/列表等，通常由GUI设计工具生成）
   //  events_init(&guider_ui); // 绑定事件处理器（如按钮点击、滑块拖动等回调函数）
   /* Infinite loop */
-  for (;;)
+  for(;;)
   {
 
     //    // === 临界区开始（保护LVGL操作）===
@@ -252,58 +309,62 @@ void StartDefaultTask(void *argument)
     // 调试语句（使用时需注意串口输出可能影响实时性）
     // printf("GUI task heartbeat\r\n");
   }
-  /* USER CODE END StartDefaultTask */
+  /* USER CODE END LVGL_Task */
 }
 
-/* USER CODE BEGIN Header_StartTask02 */
+/* USER CODE BEGIN Header_LED_Task */
 /**
- * @brief Function implementing the ledTask02 thread.
- * @param argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartTask02 */
-void StartTask02(void *argument)
+* @brief Function implementing the LED thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_LED_Task */
+void LED_Task(void *argument)
 {
-  /* USER CODE BEGIN StartTask02 */
+  /* USER CODE BEGIN LED_Task */
   /* Infinite loop */
-  for (;;)
+  for(;;)
   {
     LED1_Toggle;
     osDelay(500);
   }
-  /* USER CODE END StartTask02 */
+  /* USER CODE END LED_Task */
 }
 
-/* USER CODE BEGIN Header_StartTask03 */
+/* USER CODE BEGIN Header_Main_Task */
 /**
- * @brief Function implementing the uartTask03 thread.
- * @param argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartTask03 */
-void StartTask03(void *argument)
+* @brief Function implementing the Main thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_Main_Task */
+void Main_Task(void *argument)
 {
-  /* USER CODE BEGIN StartTask03 */
+  /* USER CODE BEGIN Main_Task */
+
+#if W25Q256_SELFTEST_ENABLE
+  osDelay(200); /* 让系统先跑起来，避免和启动阶段串口输出打架 */
+  (void)W25Q256_SelfTest_Small();
+#endif
 
   /* Infinite loop */
-  for (;;)
+  for(;;)
   {
-
-    osDelay(2);
+    osDelay(1);
   }
-  /* USER CODE END StartTask03 */
+  /* USER CODE END Main_Task */
 }
 
-/* USER CODE BEGIN Header_StartTask04 */
+/* USER CODE BEGIN Header_ESP8266_Task */
 /**
- * @brief Function implementing the AUTO_Task04 thread.
- * @param argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartTask04 */
-void StartTask04(void *argument)
+* @brief Function implementing the ESP8266 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_ESP8266_Task */
+void ESP8266_Task(void *argument)
 {
-  /* USER CODE BEGIN StartTask04 */
+  /* USER CODE BEGIN ESP8266_Task */
   osThreadId_t self = osThreadGetId();
   if (self)
   {
@@ -316,7 +377,7 @@ void StartTask04(void *argument)
     osThreadSetPriority(self, osPriorityNormal);
   }
   /* Infinite loop */
-  for (;;)
+  for(;;)
   {
     ESP_Console_Poll();
     ESP_Update_Data_And_FFT();
@@ -324,7 +385,7 @@ void StartTask04(void *argument)
     ESP_Post_Heartbeat();
     osDelay(1);
   }
-  /* USER CODE END StartTask04 */
+  /* USER CODE END ESP8266_Task */
 }
 
 /* Private application code --------------------------------------------------*/

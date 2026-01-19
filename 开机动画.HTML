@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EdgeWind Ultimate Boot (LVGL Ready)</title>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-color: #050505;
+            --term-green: #00ff41;
+            --neon-blue: #00D2FF;
+            --neon-cyan: #00fff2;
+            --alert-red: #FF2E4D;
+        }
+
+        body {
+            margin: 0; background: #000; height: 100vh;
+            display: flex; justify-content: center; align-items: center;
+            overflow: hidden; font-family: 'Montserrat', sans-serif;
+        }
+
+        /* 物理屏幕外壳 */
+        #casing {
+            padding: 20px; background: #1a1a1a; border-radius: 8px;
+            box-shadow: 0 0 0 2px #333, 0 30px 60px rgba(0,0,0,0.8);
+        }
+
+        /* 屏幕显示区域 */
+        #screen {
+            width: 800px; height: 480px;
+            background-color: var(--bg-color);
+            position: relative; overflow: hidden;
+            border-radius: 2px;
+            transform: scale(1, 0.005); /* CRT 初始状态 */
+        }
+
+        /* === 视觉纹理层 (LVGL用图片实现) === */
+        .scanlines {
+            position: absolute; inset: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 3px, 3px 100%;
+            z-index: 100; pointer-events: none;
+        }
+        
+        .vignette {
+            position: absolute; inset: 0;
+            background: radial-gradient(circle, rgba(0,0,0,0) 50%, rgba(0,0,0,0.7) 100%);
+            z-index: 101; pointer-events: none;
+        }
+
+        /* === CRT 开机动画 === */
+        #screen.power-on { animation: crt-open 0.6s cubic-bezier(0.23, 1, 0.32, 1) forwards; }
+        @keyframes crt-open {
+            0% { transform: scale(1, 0.005); filter: brightness(3); background: #fff; }
+            50% { transform: scale(1, 0.005); filter: brightness(1); background: var(--bg-color); }
+            100% { transform: scale(1, 1); }
+        }
+
+        /* === 1. 背景数据流 (Memory Dump) === */
+        .hex-bg {
+            position: absolute; top: 0; left: 0; width: 100%;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px; color: #1a1a1a; /* 极暗的背景字 */
+            line-height: 12px; white-space: pre-wrap; word-break: break-all;
+            opacity: 0; z-index: 0;
+            overflow: hidden;
+        }
+
+        /* === 2. 核心日志 (Foreground Terminal) === */
+        .terminal {
+            position: absolute; bottom: 30px; left: 30px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px; color: var(--term-green);
+            z-index: 10; display: flex; flex-direction: column; gap: 4px;
+        }
+        .log-row { display: flex; text-shadow: 0 0 2px rgba(0,255,65,0.5); }
+        .log-time { color: #555; margin-right: 10px; }
+        .log-msg { color: var(--term-green); }
+        .log-status.ok { color: var(--neon-blue); margin-left: 10px; font-weight: bold; }
+        .log-status.warn { color: var(--alert-red); margin-left: 10px; font-weight: bold; }
+
+        /* === 3. Logo 区域 === */
+        .logo-wrap {
+            position: absolute; top: 45%; left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex; flex-direction: column; align-items: center;
+            opacity: 0; z-index: 20;
+        }
+
+        /* Logo SVG - 风之脉冲 */
+        .logo-svg {
+            width: 120px; height: 100px;
+            fill: none; stroke: var(--neon-blue); stroke-width: 4;
+            stroke-linecap: square; filter: drop-shadow(0 0 8px var(--neon-blue));
+        }
+
+        .logo-title {
+            font-size: 56px; font-weight: 900; color: #fff;
+            letter-spacing: 4px; margin-top: 10px; text-transform: uppercase;
+            position: relative;
+        }
+
+        /* 激光扫描遮罩特效 */
+        .scan-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent 45%, var(--neon-cyan) 50%, transparent 55%);
+            mix-blend-mode: overlay;
+            opacity: 0; pointer-events: none;
+        }
+        .scanning { animation: scan-move 1.5s ease-in-out; }
+        @keyframes scan-move {
+            0% { transform: translateX(-150px); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { transform: translateX(400px); opacity: 0; }
+        }
+
+        /* Glitch RGB 分离 (LVGL用图片切换实现) */
+        .glitch-text { animation: rgb-shake 0.4s steps(2) infinite; }
+        @keyframes rgb-shake {
+            0% { text-shadow: 2px 0 var(--alert-red), -2px 0 var(--neon-blue); transform: translate(1px, 0); }
+            50% { text-shadow: -2px 0 var(--alert-red), 2px 0 var(--neon-blue); transform: translate(-1px, 0); }
+            100% { text-shadow: 0 0 0; transform: translate(0, 0); }
+        }
+
+        /* === 4. 加载条 === */
+        .loader-box {
+            width: 300px; height: 4px; background: #222; margin-top: 30px;
+            position: relative; overflow: hidden; border-radius: 2px;
+        }
+        .loader-bar {
+            width: 0%; height: 100%; background: var(--neon-blue);
+            box-shadow: 0 0 15px var(--neon-blue);
+        }
+
+        /* 重播按钮 */
+        .btn-replay {
+            position: fixed; bottom: 20px; padding: 10px 20px;
+            background: transparent; color: #666; border: 1px solid #444;
+            font-family: monospace; cursor: pointer; z-index: 1000;
+        }
+        .btn-replay:hover { color: #fff; border-color: #fff; }
+
+    </style>
+</head>
+<body>
+
+<div id="casing">
+    <div id="screen">
+        <div class="scanlines"></div>
+        <div class="vignette"></div>
+
+        <div class="hex-bg" id="hex-bg"></div>
+
+        <div class="terminal" id="terminal"></div>
+
+        <div class="logo-wrap" id="logo-wrap">
+            <div class="scan-overlay" id="scan-fx"></div>
+
+            <svg class="logo-svg" viewBox="0 0 120 100">
+                <path d="M 40 50 L 10 10 M 40 50 L 10 90" stroke-dasharray="100" stroke-dashoffset="100" id="path-blade" />
+                <path d="M 40 50 L 60 50 L 70 20 L 80 80 L 90 50 L 120 50" stroke-dasharray="200" stroke-dashoffset="200" id="path-pulse" />
+                <circle cx="40" cy="50" r="4" fill="#00D2FF" opacity="0" id="logo-dot" />
+            </svg>
+
+            <div class="logo-title" id="logo-text">EDGEWIND</div>
+            <div style="font-size: 10px; letter-spacing: 8px; color: #666; margin-top: 5px;">SYSTEM V2.0</div>
+            
+            <div class="loader-box">
+                <div class="loader-bar" id="loader"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<button class="btn-replay" onclick="boot()">REBOOT SYSTEM</button>
+
+<script>
+    // 元素引用
+    const screen = document.getElementById('screen');
+    const terminal = document.getElementById('terminal');
+    const logoWrap = document.getElementById('logo-wrap');
+    const logoText = document.getElementById('logo-text');
+    const loader = document.getElementById('loader');
+    const hexBg = document.getElementById('hex-bg');
+    const scanFx = document.getElementById('scan-fx');
+    const pathBlade = document.getElementById('path-blade');
+    const pathPulse = document.getElementById('path-pulse');
+    const logoDot = document.getElementById('logo-dot');
+
+    const logs = [
+        { t: "0.002", m: "CORTEX-M7 CORE RESET", s: "OK" },
+        { t: "0.015", m: "INIT AXI/SRAM BUS", s: "OK" },
+        { t: "0.040", m: "LOAD KERNEL @0x08000000", s: "DONE" },
+        { t: "0.120", m: "CHECK SENSORS (ADS131)", s: "READY" },
+        { t: "0.350", m: "WIFI UPLINK (ESP8266)", s: "LINKED" },
+        { t: "0.800", m: "MOUNTING FILESYSTEM", s: "MOUNTED" },
+        { t: "1.200", m: "STARTING GUI ENGINE", s: "..." }
+    ];
+
+    // 生成随机 Hex 字符串填充背景
+    function generateHexBg() {
+        let str = "";
+        for(let i=0; i<400; i++) {
+            str += Math.random().toString(16).substr(2, 2).toUpperCase() + " ";
+        }
+        hexBg.innerText = str;
+    }
+
+    async function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function typeLog(item) {
+        const row = document.createElement('div');
+        row.className = 'log-row';
+        row.innerHTML = `<span class="log-time">[${item.t}]</span> <span class="log-msg">${item.m}</span> <span class="log-status ${item.s==='LINKED'||item.s==='...'?'warn':'ok'}">${item.s}</span>`;
+        terminal.appendChild(row);
+        // 保持只显示最后5行
+        if(terminal.children.length > 5) terminal.firstChild.remove();
+    }
+
+    async function boot() {
+        // 重置
+        screen.classList.remove('power-on');
+        void screen.offsetWidth;
+        terminal.innerHTML = '';
+        logoWrap.style.opacity = '0';
+        logoText.classList.remove('glitch-text');
+        logoText.style.color = 'white';
+        loader.style.width = '0%';
+        hexBg.style.opacity = '0';
+        scanFx.classList.remove('scanning');
+        
+        // 重置SVG
+        pathBlade.style.transition = 'none'; pathBlade.style.strokeDashoffset = '100';
+        pathPulse.style.transition = 'none'; pathPulse.style.strokeDashoffset = '200';
+        logoDot.style.opacity = '0';
+
+        generateHexBg();
+
+        // 1. Power On (CRT Effect)
+        screen.classList.add('power-on');
+        await wait(600);
+
+        // 2. Data Dump Phase
+        hexBg.style.transition = 'opacity 1s';
+        hexBg.style.opacity = '0.15'; // 微弱的背景数据流
+
+        for (let item of logs) {
+            await typeLog(item);
+            await wait(100 + Math.random()*200);
+        }
+
+        // 3. Logo Reveal (Laser Scan)
+        terminal.style.transition = 'opacity 0.5s';
+        terminal.style.opacity = '0';
+        await wait(200);
+
+        logoWrap.style.opacity = '1';
+        
+        // 启动激光扫描
+        scanFx.classList.add('scanning'); // 光效扫过
+        
+        // 配合光效绘制线条
+        await wait(100);
+        pathBlade.style.transition = 'stroke-dashoffset 0.8s ease-out';
+        pathBlade.style.strokeDashoffset = '0';
+        
+        await wait(200);
+        logoDot.style.transition = 'opacity 0.2s';
+        logoDot.style.opacity = '1';
+
+        await wait(100);
+        pathPulse.style.transition = 'stroke-dashoffset 0.8s ease-out';
+        pathPulse.style.strokeDashoffset = '0';
+
+        // 4. Glitch Impact
+        await wait(600);
+        logoText.classList.add('glitch-text'); // 文字抖动
+        logoText.style.color = 'var(--neon-blue)';
+        await wait(400);
+        logoText.classList.remove('glitch-text');
+        logoText.style.color = 'white';
+
+        // 5. Loading
+        loader.style.transition = 'width 1.5s cubic-bezier(0.22, 1, 0.36, 1)';
+        loader.style.width = '100%';
+    }
+
+    setTimeout(boot, 100);
+</script>
+
+</body>
+</html>

@@ -42,7 +42,7 @@
 #include "lvgl.h" 
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
-#include "demos/lv_demos.h"
+// Demo 已移除，使用自定义 EdgeWind UI
 
 #include <string.h>
 #include "arm_math.h"

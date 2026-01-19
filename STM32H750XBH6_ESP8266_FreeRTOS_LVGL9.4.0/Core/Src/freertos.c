@@ -36,7 +36,8 @@
 #include "lvgl.h"
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
-#include "demos/lv_demos.h"
+// Demo 已移除，使用自定义 EdgeWind UI
+#include "EdgeWind_UI/edgewind_ui.h"
 #include "esp8266.h"
 #include "qspi_w25q256.h"
 #include <string.h>
@@ -394,28 +395,24 @@ void LVGL_Task(void *argument)
   lv_init();            // 初始化LVGL核心库（内存管理、内部变量等）
   lv_port_disp_init();  // 初始化显示驱动接口（配置帧缓冲区、注册刷新回调）
   lv_port_indev_init(); // 初始化输入设备接口（注册触摸屏/编码器驱动）
-  /* 启动 Demo */
-  lv_demo_widgets();
-  //  // 用户界面初始化
-  //  setup_ui(&guider_ui);    // 创建UI组件（按钮/标签/列表等，通常由GUI设计工具生成）
-  //  events_init(&guider_ui); // 绑定事件处理器（如按钮点击、滑块拖动等回调函数）
+  
+  /* 初始化 EdgeWind 自定义 UI */
+  edgewind_ui_init();
   /* Infinite loop */
   for(;;)
   {
 
-    //    // === 临界区开始（保护LVGL操作）===
-    osMutexAcquire(mutex_id, osWaitForever); // 获取互斥锁（防止多任务冲突）
+    /* === 临界区开始（保护LVGL操作）=== */
+    osMutexAcquire(mutex_id, osWaitForever);
 
-    //    /* LVGL核心处理（必须在所有任务中周期性调用）*/
-    lv_task_handler(); // 执行重绘/动画/事件分发（耗时操作，建议5-30ms调用一次）
-                       //                       // 注意：任何LVGL API调用（如lv_label_set_text）都需要类似的锁保护
+    /* EdgeWind UI 数据刷新 */
+    edgewind_ui_refresh();
+    
+    /* LVGL 核心处理 */
+    lv_task_handler();
 
-    //    /* 触摸输入采集 */
-    //    Touch_Scan(); // 读取触摸控制器数据（如I2C通讯）
-    //                  // 实际触摸事件通过lv_port_indev_init注册的回调注入LVGL
-
-    osMutexRelease(mutex_id); // 释放互斥锁（允许其他任务访问共享资源）
-                              //    // === 临界区结束 ===
+    osMutexRelease(mutex_id);
+    /* === 临界区结束 === */
 
     //    /* 周期延时（关键性能参数）*/
     osDelay(LV_DEF_REFR_PERIOD + 1); // 保持屏幕刷新率稳定（典型值30ms≈33FPS）

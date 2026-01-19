@@ -22,7 +22,7 @@
 /* * 节点身份信息
  * 用于在后端区分不同的监测设备。
  */
-#define NODE_ID "STM32_H7_智能永久设备" // 设备唯一标识 ID
+#define NODE_ID "STM32_H7_智能RTOS设备" // 设备唯一标识 ID
 #define NODE_LOCATION "Lab_Test"        // 设备部署位置
 
 #endif /* __ESP8266_CONFIG_H */

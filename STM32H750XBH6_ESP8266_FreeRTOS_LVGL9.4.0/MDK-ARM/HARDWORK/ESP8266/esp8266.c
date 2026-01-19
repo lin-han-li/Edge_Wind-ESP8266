@@ -23,6 +23,22 @@
 /* 引用 usart.c 中定义的句柄 */
 extern UART_HandleTypeDef huart2;
 
+/* =================================================================================
+ * 浮点数输出安全：
+ * - C 库 printf/sprintf 对 NaN/Inf 往往会输出 "nan"/"inf"（小写），这会导致 Python json.loads 直接解析失败，
+ *   进而出现“服务器端全 0 / 节点超时注销 / 过几秒又恢复”等现象。
+ * - 所以：所有写入 JSON 的 float 必须先做有限值钳位。
+ * ================================================================================= */
+static inline float ESP_SafeFloat(float v)
+{
+    /* NaN: v!=v；Inf: 与阈值比较会成立 */
+    if (!(v == v))
+        return 0.0f;
+    if (v > 1.0e20f || v < -1.0e20f)
+        return 0.0f;
+    return v;
+}
+
 // =================================================================================
 // 1. STM32H7 特有的内存管理与 Cache 维护
 // =================================================================================
@@ -186,6 +202,15 @@ static uint8_t g_boot_hardreset_done = 0;        // 启动时是否已执行过�
  * 防止请求发送过快淹没服务器，导致 TCP 拥塞或解析错误。 */
 static volatile uint8_t g_waiting_http_response = 0;
 static volatile uint32_t g_waiting_http_tick = 0;
+
+/* 发送门控超时：用于防止“没识别到 HTTP/1.1 就永久断流”。
+ * 之前 250ms 在实际网络/服务器负载下偏小，会导致频繁“放行继续发送”并放大串口压力。 */
+#ifndef ESP_HTTP_GATE_TIMEOUT_MS
+#define ESP_HTTP_GATE_TIMEOUT_MS 1200u
+#endif
+
+/* USART2 流式接收：DMA Circular + IDLE/TC/HT 回调中按“写指针”增量取数据，避免每次回调停/启 DMA 产生空窗导致 ORE。 */
+static volatile uint16_t g_stream_rx_last_pos = 0;
 static uint32_t g_last_heartbeat_tick = 0;
 
 /* 关键标志位：指示当前是否处于 AT 命令模式
@@ -245,6 +270,7 @@ static void ESP_ForceStop_DMA(void)
     // 5) 更新软件状态标志
     g_usart2_rx_started = 0;
     g_waiting_http_response = 0;
+    g_stream_rx_last_pos = 0;
 }
 
 /**
@@ -756,27 +782,6 @@ void ESP_Post_Data(void)
     if (g_esp_ready == 0)
         return;
 
-    // 流量控制（发送门控）
-    // 如果上一次请求的 HTTP 响应还没回来，不要继续堆请求，防止服务器解析失败。
-    if (g_waiting_http_response)
-    {
-        uint32_t now = HAL_GetTick();
-        // 关键修复：压力测试不能因为“没识别到 HTTP/1.1”就完全断流。
-        // 将超时时间设置为 250ms (2Mbps 传输16KB约80ms + 服务器处理)
-        // 如果超过 250ms 还没回包，大概率是丢包了，直接放行发下一包。
-        if (g_waiting_http_tick != 0 && (now - g_waiting_http_tick) > 250u)
-        {
-#if (ESP_DEBUG)
-            ESP_Log("[调试] HTTP 门控超时(>250ms)，放行继续发送\r\n");
-#endif
-            g_waiting_http_response = 0;
-        }
-        else
-        {
-            return; // 还在等，跳过本次发送
-        }
-    }
-
     // 5Hz 发送频率限制
     static uint32_t last_send_time = 0;
     uint32_t now_tick = HAL_GetTick();
@@ -796,6 +801,7 @@ void ESP_Post_Data(void)
     // 循环写入 4 个通道的数据
     for (int i = 0; i < 4; i++)
     {
+        float cv = ESP_SafeFloat(node_channels[i].current_value);
         p += sprintf(p, "{"
                         "\"id\": %d, \"channel_id\": %d,"
                         "\"label\": \"%s\", \"name\": \"%s\","
@@ -804,7 +810,7 @@ void ESP_Post_Data(void)
                         "\"waveform\": [",
                      node_channels[i].id, node_channels[i].id,
                      node_channels[i].label, node_channels[i].label, // name冗余label
-                     node_channels[i].current_value, node_channels[i].current_value,
+                     cv, cv,
                      node_channels[i].unit);
 
         // 波形数据 (STEP=4, 发256点)
@@ -861,9 +867,6 @@ void ESP_Post_Data(void)
     if (st == HAL_OK)
     {
         last_send_time = now_tick;
-        // 标记开始等待回包
-        g_waiting_http_response = 1;
-        g_waiting_http_tick = now_tick;
         g_last_heartbeat_tick = now_tick;
     }
 
@@ -972,6 +975,7 @@ static void ESP_StreamRx_Start(void)
     memset(g_stream_rx_buf, 0, sizeof(g_stream_rx_buf));
     memset(g_stream_window, 0, sizeof(g_stream_window));
     g_stream_window_len = 0;
+    g_stream_rx_last_pos = 0;
 
     // 确保 RX 状态干净（避免因为之前的阻塞接收/异常导致启动失败）
     (void)HAL_UART_AbortReceive(&huart2);
@@ -1006,8 +1010,8 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
     // ---------------- 关键修复：先扫描“原始数据块” ----------------
     // 避免因为滑动窗口截断（例如 "HTTP" 和 "/1.1" 在两包里）导致漏判
 
-    // 1) HTTP 响应检测：只要任意数据块里出现 HTTP/1.1，就认为已收到本次请求的回包（解除门控）
-    if (g_waiting_http_response && ESP_BufContains(data, len, "HTTP/1.1"))
+    // 1) HTTP 响应检测：兼容 HTTP/1.0/1.1，出现 "HTTP/" 即认为收到响应头（辅助调试）
+    if (g_waiting_http_response && ESP_BufContains(data, len, "HTTP/"))
     {
         g_waiting_http_response = 0;
         g_last_rx_tick = HAL_GetTick();
@@ -1076,8 +1080,8 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
         g_link_reconnect_pending = 1;
     }
 
-    // 识别 HTTP 响应头
-    if (g_waiting_http_response && strstr(g_stream_window, "HTTP/1.1"))
+    // 识别 HTTP 响应头（辅助调试，兼容 HTTP/1.0/1.1）
+    if (g_waiting_http_response && strstr(g_stream_window, "HTTP/"))
     {
         g_waiting_http_response = 0;
         g_last_rx_tick = HAL_GetTick();
@@ -1098,43 +1102,63 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
             return;
         }
         g_usart2_rx_events++;
+        (void)Size;
+
+        /* DMA Circular 场景：不要在回调里反复 Stop/Start DMA，否则 2Mbps 下极易产生空窗 ORE。
+         * 这里按 DMA 写指针(pos)做增量解析，回调触发频率由 IDLE/TC/HT 决定。 */
+        if (huart2.hdmarx != NULL)
+        {
+            const uint16_t buf_sz = (uint16_t)sizeof(g_stream_rx_buf);
+            uint16_t pos = (uint16_t)(buf_sz - (uint16_t)__HAL_DMA_GET_COUNTER(huart2.hdmarx));
+
+            if (pos != g_stream_rx_last_pos && pos <= buf_sz)
+            {
+                uint32_t now = HAL_GetTick();
+                g_last_rx_tick = now;
+
+                /* 有新数据到达：直接解除门控。
+                 * 说明服务器/链路至少有回包字节到达，继续卡门控只会造成“超时放行刷屏”并降低吞吐。
+                 * 更严格的 HTTP 头检测仍由 ESP_StreamRx_Feed 负责（用于调试/统计）。 */
+                if (g_waiting_http_response)
+                {
+                    g_waiting_http_response = 0;
+                }
+
+                if (pos > g_stream_rx_last_pos)
+                {
+                    uint16_t len = (uint16_t)(pos - g_stream_rx_last_pos);
+                    DCache_InvalidateByAddr_Any(&g_stream_rx_buf[g_stream_rx_last_pos], len);
+                    ESP_StreamRx_Feed(&g_stream_rx_buf[g_stream_rx_last_pos], len);
+                }
+                else
+                {
+                    /* wrap-around */
+                    uint16_t len1 = (uint16_t)(buf_sz - g_stream_rx_last_pos);
+                    if (len1 > 0)
+                    {
+                        DCache_InvalidateByAddr_Any(&g_stream_rx_buf[g_stream_rx_last_pos], len1);
+                        ESP_StreamRx_Feed(&g_stream_rx_buf[g_stream_rx_last_pos], len1);
+                    }
+                    if (pos > 0)
+                    {
+                        DCache_InvalidateByAddr_Any(&g_stream_rx_buf[0], pos);
+                        ESP_StreamRx_Feed(&g_stream_rx_buf[0], pos);
+                    }
+                }
+                g_stream_rx_last_pos = pos;
+            }
+
+            g_usart2_rx_started = 1;
+            return;
+        }
+
+        /* 兜底：无 DMA 句柄时维持旧逻辑（不建议 2Mbps 下走这里） */
         if (Size > 0 && Size <= sizeof(g_stream_rx_buf))
         {
             uint32_t now = HAL_GetTick();
             g_last_rx_tick = now;
-
-            // 只要收到了任何回包字节，就认为本次请求已有响应
-            if (g_waiting_http_response)
-            {
-                g_waiting_http_response = 0;
-            }
-
-            // ⚠️ 关键：DMA 接收后 Invalidate DCache
-            // 确保 CPU 从 RAM 读取最新数据，而不是 Cache 中的旧值
             DCache_InvalidateByAddr_Any(g_stream_rx_buf, Size);
-
-            // 解析数据
             ESP_StreamRx_Feed(g_stream_rx_buf, Size);
-        }
-
-        // 重新启动 RX（若异常，先 Abort 再重启）
-        HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
-        if (st != HAL_OK)
-        {
-            (void)HAL_UART_AbortReceive(&huart2);
-            st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
-        }
-        if (st == HAL_OK)
-        {
-            g_usart2_rx_started = 1;
-            if (huart2.hdmarx)
-            {
-                __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
-            }
-        }
-        else
-        {
-            g_usart2_rx_started = 0;
         }
         return;
     }
@@ -1181,6 +1205,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
         // 清除错误并重启 DMA 接收，确保能继续收数据
         ESP_Clear_Error_Flags();
         (void)HAL_UART_AbortReceive(&huart2);
+        g_stream_rx_last_pos = 0;
 
         HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle_DMA(&huart2, g_stream_rx_buf, sizeof(g_stream_rx_buf));
         g_usart2_rx_started = (st == HAL_OK) ? 1 : 0;
@@ -1558,7 +1583,8 @@ static void Helper_FloatArray_To_String(char *dest, float *data, int count, int 
     int i;
     for (i = 0; i < count; i += step)
     {
-        dest += sprintf(dest, "%.1f", data[i]);
+        float v = ESP_SafeFloat(data[i]);
+        dest += sprintf(dest, "%.1f", v);
         if (i + step < count)
             *dest++ = ',';
     }

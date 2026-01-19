@@ -33,6 +33,9 @@ _device_api_key_warned = False
 
 # 设备上报调试：限制心跳日志频率，避免刷屏
 _last_hb_log_ts = {}
+_last_perf_log_ts = {}  # {node_id: ts}
+_last_processed_cache = {}  # {node_id: processed_data}：用于兜底填充空波形/频谱，避免前端周期性卡顿
+_last_bad_frame_log_ts = {}  # {node_id: ts}：坏帧诊断限频日志
 
 # 全局变量（将从app传入）
 active_nodes = {}  # 将在app.py中初始化并传入
@@ -83,6 +86,10 @@ _last_db_heartbeat_ts = {}  # {node_id: ts}
 
 # 默认每个节点最多每 N 秒写一次 Device.last_heartbeat（可通过环境变量调节）
 DEVICE_DB_UPDATE_INTERVAL_SEC = max(1.0, _env_float("EDGEWIND_DEVICE_DB_UPDATE_SEC", 5))
+
+# 心跳性能诊断：仅在“慢请求”时打印耗时分解（避免刷屏）
+HB_SLOW_MS = max(1.0, _env_float("EDGEWIND_HEARTBEAT_SLOW_MS", 80))
+HB_PERF_LOG_SEC = max(1.0, _env_float("EDGEWIND_HEARTBEAT_PERF_LOG_SEC", 5))
 
 
 def _get_json_payload() -> dict:
@@ -497,11 +504,13 @@ def upload_data():
 def node_heartbeat():
     """节点心跳接口 - 接收STM32节点的实时数据"""
     try:
+        t0 = time.perf_counter()
         auth_resp = _device_auth_or_401()
         if auth_resp:
             return auth_resp
 
         data = _get_json_payload()
+        t_json = time.perf_counter()
         node_id = data.get('node_id') or data.get('device_id')
         fault_code = (data.get('fault_code') or 'E00').strip() or 'E00'
         
@@ -549,6 +558,10 @@ def node_heartbeat():
         raw_channels = data.get('channels') or []
         if not isinstance(raw_channels, list):
             raw_channels = []
+        bad_wave_type = 0
+        bad_spec_type = 0
+        bad_id_type = 0
+        bad_val = 0
         for ch in raw_channels:
             if not isinstance(ch, dict):
                 continue
@@ -559,9 +572,13 @@ def node_heartbeat():
             # 统一字段名：优先 fft_spectrum；兼容历史设备的 fft
             spec = ch.get('fft_spectrum', ch.get('fft', []))
 
+            if (ch_id is not None) and (not isinstance(ch_id, int)):
+                bad_id_type += 1
             if not isinstance(wave, list):
+                bad_wave_type += 1
                 wave = []
             if not isinstance(spec, list):
+                bad_spec_type += 1
                 spec = []
 
             # 降采样：减少 SocketIO JSON 体积（尤其多节点时效果明显）
@@ -572,6 +589,7 @@ def node_heartbeat():
                 val_float = float(val) if val is not None else 0.0
             except Exception:
                 val_float = 0.0
+                bad_val += 1
 
             # 先按 label 识别（中文优先）
             mapped = False
@@ -611,6 +629,48 @@ def node_heartbeat():
                     processed_data['leakage'] = val_float
                     processed_data['leakage_waveform'] = wave
                     processed_data['leakage_spectrum'] = spec
+
+        t_parse = time.perf_counter()
+
+        # 3.5) 兜底：检测“疑似坏帧”（解析到的 channels/波形/频谱为空或类型异常）
+        # 说明：MCU 端在透传 TCP 下连续发送 HTTP 请求；若 Content-Length/JSON 结构偶发异常，
+        # 可能出现短时间 processed_data 全 0/数组为空，前端表现为“服务器看到 0，几秒后又恢复”。
+        prev = _last_processed_cache.get(node_id)
+        series_keys = (
+            'voltage_waveform', 'voltage_spectrum',
+            'voltage_neg_waveform', 'voltage_neg_spectrum',
+            'current_waveform', 'current_spectrum',
+            'leakage_waveform', 'leakage_spectrum',
+        )
+        has_any_series = any(isinstance(processed_data.get(k), list) and len(processed_data.get(k)) > 0 for k in series_keys)
+        metrics_all_zero = (
+            float(processed_data.get('voltage') or 0) == 0.0 and
+            float(processed_data.get('voltage_neg') or 0) == 0.0 and
+            float(processed_data.get('current') or 0) == 0.0 and
+            float(processed_data.get('leakage') or 0) == 0.0
+        )
+        is_bad_frame = (len(raw_channels) == 0) or ((not has_any_series) and metrics_all_zero) or (bad_wave_type > 0) or (bad_spec_type > 0) or (bad_id_type > 0)
+
+        if isinstance(prev, dict) and is_bad_frame:
+            # 直接沿用上一帧完整 processed_data（包括 metrics + series），避免 UI 变 0/空。
+            processed_data = prev
+            # 限频打印坏帧摘要（便于定位根因）
+            last_bad = _last_bad_frame_log_ts.get(node_id, 0)
+            if current_timestamp - last_bad >= 5:
+                _last_bad_frame_log_ts[node_id] = current_timestamp
+                logger.warning(
+                    "[/api/node/heartbeat][bad-frame] node_id=%s content_length=%s ch=%d bad_id=%d bad_wave=%d bad_spec=%d bad_val=%d",
+                    node_id,
+                    request.content_length,
+                    len(raw_channels),
+                    bad_id_type,
+                    bad_wave_type,
+                    bad_spec_type,
+                    bad_val,
+                )
+        else:
+            # 正常帧：写入缓存
+            _last_processed_cache[node_id] = processed_data
 
         # 4. Save to buffer
         if fault_code == 'E00':
@@ -689,6 +749,8 @@ def node_heartbeat():
                 'fault_code': fault_code
             }, room=f'node_{node_id}', namespace='/')
 
+        t_emit = time.perf_counter()
+
         # 7. Database operation in background（保底）
         # 说明：建单只应在“故障发生事件(E00->E0X)”触发一次。
         # 若上面已提交过任务，则不再重复提交，避免同一秒出现重复工单。
@@ -713,6 +775,24 @@ def node_heartbeat():
         if current_timestamp - last_db >= DEVICE_DB_UPDATE_INTERVAL_SEC:
             _last_db_heartbeat_ts[node_id] = current_timestamp
             _submit_update_device_heartbeat(node_id, data, fault_code, current_timestamp)
+
+        # 慢请求诊断：打印耗时分解（每节点限频）
+        total_ms = (t_emit - t0) * 1000.0
+        if total_ms >= HB_SLOW_MS:
+            lastp = _last_perf_log_ts.get(node_id, 0)
+            if current_timestamp - lastp >= HB_PERF_LOG_SEC:
+                _last_perf_log_ts[node_id] = current_timestamp
+                logger.warning(
+                    "[/api/node/heartbeat][perf] node_id=%s total=%.1fms json=%.1fms parse=%.1fms emit=%.1fms ch=%d waveMax=%d specMax=%d",
+                    node_id,
+                    total_ms,
+                    (t_json - t0) * 1000.0,
+                    (t_parse - t_json) * 1000.0,
+                    (t_emit - t_parse) * 1000.0,
+                    len(raw_channels) if isinstance(raw_channels, list) else 0,
+                    MAX_WAVEFORM_POINTS,
+                    MAX_SPECTRUM_POINTS,
+                )
 
         return jsonify(response_payload), 200
 

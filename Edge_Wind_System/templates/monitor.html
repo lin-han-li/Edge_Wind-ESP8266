@@ -1359,7 +1359,9 @@
         updateCharts();
         
         // 更新性能监控面板
-        updatePerfPanel();
+        if (typeof window.updatePerfPanel === 'function') {
+            window.updatePerfPanel();
+        }
     }
 
     // ========== 选择通道（保留兼容性）==========
@@ -1520,6 +1522,34 @@
         if (MONITOR_DEBUG_LOG) console.log(...args);
     }
 
+    // 轻量性能辅助：用于定位“数据间隔卡顿” vs “渲染卡顿”
+    window.__edgewindPerfExtra = window.__edgewindPerfExtra || { lastMsgDeltaMs: 0, lastWaveLen: 0, lastSpecLen: 0 };
+
+    // ========== 性能优化：复用数组，减少 GC 抖动 ==========
+    // 说明：monitor_update 约 5Hz；如果每次都创建大量新数组/对象（尤其 1024 点波形 -> 1024 个 [x,y]），
+    // 浏览器会周期性触发 GC，表现为“刷新几次就卡 0.5~1s”。
+    const _edgewindSeriesCache = {
+        time: new Map(), // key: len -> { axis:number[], data:[number,number][] }
+        freq: new Map()
+    };
+
+    function _getTimeSeriesBuffer(len) {
+        let buf = _edgewindSeriesCache.time.get(len);
+        if (!buf) {
+            const axis = new Array(len);
+            const data = new Array(len);
+            const dt = 200 / len;
+            for (let i = 0; i < len; i++) {
+                const t = i * dt;
+                axis[i] = t;
+                data[i] = [t, 0];
+            }
+            buf = { axis, data };
+            _edgewindSeriesCache.time.set(len, buf);
+        }
+        return buf;
+    }
+
     let _chartsUpdateScheduled = false;
     let _lastChartsUpdateTs = 0;
     const CHARTS_MAX_HZ = 10; // 最多 10Hz 刷新图表（足够平滑；防止高频推送把页面拖死）
@@ -1568,6 +1598,12 @@
         let specData = d[specKey] || [];
         
         debugLog(`[renderDashboard] 数据源: ${currentSource}, 波形数据长度: ${waveData.length}, 频谱数据长度: ${specData.length}`);
+
+        // 记录当前数据量（用于定位 MCU 节点是否在周期性发空数组）
+        try {
+            window.__edgewindPerfExtra.lastWaveLen = Array.isArray(waveData) ? waveData.length : -1;
+            window.__edgewindPerfExtra.lastSpecLen = Array.isArray(specData) ? specData.length : -1;
+        } catch (e) {}
         
         // 如果扁平化键没有数据，从 channels 数组获取（向后兼容）
         if ((!waveData || waveData.length === 0) && d.channels && Array.isArray(d.channels) && d.channels.length > 0) {
@@ -1694,9 +1730,12 @@
                 wsStatus.innerHTML = '<span class="badge bg-secondary">未连接</span>';
             }
             
-            // 更新订阅节点
-            document.getElementById('perf-subscribed-node').textContent = 
-                currentNodeId || '无';
+            // 更新订阅节点（附带 Δt/点数：用于定位 MCU 是否在周期性发空数组或收包间隔抖动）
+            {
+                const ex = window.__edgewindPerfExtra || {};
+                document.getElementById('perf-subscribed-node').textContent =
+                    (currentNodeId || '无') + ` | Δt=${ex.lastMsgDeltaMs || 0}ms wave=${ex.lastWaveLen || 0} spec=${ex.lastSpecLen || 0}`;
+            }
             
             // 更新渲染延迟
             const avgRenderTime = perfStats.renderCount > 0 ? 
@@ -1704,13 +1743,16 @@
             document.getElementById('perf-render-time').textContent = 
                 avgRenderTime.toFixed(1) + ' ms';
         }
+        // 兼容：页面其他区域（例如 selectNode）会调用 updatePerfPanel()
+        // 这里显式挂到 window，避免 ReferenceError 打断 UI 逻辑。
+        window.updatePerfPanel = updatePerfPanel;
         
         // 每秒更新一次性能面板
         setInterval(updatePerfPanel, 1000);
         
         socket.on('connect', () => {
             console.log('⚡ [WebSocket] 实时推送连接已建立！');
-            updatePerfPanel();  // 立即更新状态
+            if (typeof window.updatePerfPanel === 'function') window.updatePerfPanel();  // 立即更新状态
             
             // 如果已选择边缘节点，立即订阅
             if (currentNodeId) {
@@ -1918,6 +1960,8 @@
                     perfStats.refreshRate = perfStats.refreshRate * 0.8 + instantRate * 0.2;
                 }
             }
+            // 记录最近一次消息间隔（用于观察是否存在“收包停顿”）
+            try { window.__edgewindPerfExtra.lastMsgDeltaMs = perfStats.lastUpdateTime ? (now - perfStats.lastUpdateTime) : 0; } catch (e) {}
             perfStats.lastUpdateTime = now;
             
             try {
@@ -2023,7 +2067,7 @@
                     currentNodeId = msg.node_id;
                     lastCachedData = msg.data;
                     renderDashboard(lastCachedData);
-                    updatePerfPanel();  // 更新性能面板
+                    if (typeof window.updatePerfPanel === 'function') window.updatePerfPanel();  // 更新性能面板
                 }
             } catch (e) {
                 console.error("🔥 Monitor Update Error:", e);
@@ -2399,10 +2443,11 @@
             tContainer.style.height = '400px';
         }
 
-        // 2. Data Safety (Fix Empty Array Crash)
+        // 2. Data Safety：空波形不要“补 1024 零线”（会频繁分配大数组触发 GC 卡顿）
+        // 直接保持上一帧图表，等待下一次有效数据。
         if (!waveform || !Array.isArray(waveform) || waveform.length === 0) {
-            console.warn("[updateTimeDomainChart] 波形数据为空，使用零线");
-            waveform = new Array(1024).fill(0);
+            debugLog("[updateTimeDomainChart] 波形为空，跳过本次更新");
+            return;
         }
 
         // 3. Initialize Time Chart
@@ -2413,10 +2458,14 @@
         // 生成 X 轴（单位：ms）
         // 关键修复：将时域图从 category 轴改为 value 轴，并使用 [t, y] 数据对，
         // 这样 dataZoom 的 startValue/endValue 才能按“真实数值”工作，缩小才能回到全范围。
-        const timeAxis = Array.from({length: waveform.length}, (_, i) =>
-            i * (200 / waveform.length)
-        );
-        const timeSeriesData = waveform.map((v, i) => [timeAxis[i], v]);
+        // 复用 [t,y] 数据对数组，避免高频分配导致 GC 抖动
+        const buf = _getTimeSeriesBuffer(waveform.length);
+        const timeAxis = buf.axis;
+        const timeSeriesData = buf.data;
+        for (let i = 0; i < waveform.length; i++) {
+            // 保持 x 不变，仅更新 y
+            timeSeriesData[i][1] = waveform[i];
+        }
 
         // 把“全量X范围”显式写入图表实例，供缩放工具使用（保证滚轮缩小一定能回到全范围）
         // 注意：这里 max 用最后一个采样点的时间（例如约 199.8ms），与图上显示的最大值一致。
@@ -2443,6 +2492,7 @@
                     left: 'center', 
                     top: 5 
                 },
+                animation: false,
                 tooltip: { 
                     trigger: 'axis',
                     formatter: function(params) {
@@ -2511,7 +2561,7 @@
                     },
                     animation: false
                 }]
-            }, { notMerge: false, lazyUpdate: false });
+            }, { notMerge: false, lazyUpdate: true, silent: true });
             timeDomainChart._configInitialized = true;
         } else {
             // 高频更新只更新数据/标题/轴名，不动 dataZoom
@@ -2527,17 +2577,11 @@
                     data: timeSeriesData,
                     lineStyle: { width: 1.5, color: lineColor }
                 }]
-            }, { notMerge: false, lazyUpdate: false });
+            }, { notMerge: false, lazyUpdate: true, silent: true });
         }
         // ^ IMPORTANT: Removed {notMerge: true} so zoom state is preserved!
-
-        // 6. Ensure proper sizing (缩放交互只需要初始化一次；不要在每次更新时重复绑定事件)
-        setTimeout(() => {
-            if (timeDomainChart) {
-                timeDomainChart.resize();
-                console.log(`[updateTimeDomainChart] ✅ 图表已更新: ${waveform.length}个数据点 (缩放状态已保持)`);
-            }
-        }, 50);
+        // 注意：不要在每次数据更新后强制 resize()，这会触发布局计算并造成周期性卡顿。
+        // resize 已在 tab 切换 / window resize 中处理。
     }
 
     // ========== 更新频域图表（使用从后端接收的FFT数据）==========
@@ -2553,23 +2597,15 @@
                 : (channelData?.fft_spectrum || []);
             
             try {
-                // 如果FFT数据为空，显示加载状态而不是清空图表
+                // FFT 为空：不要 showLoading/clear（会触发重绘+布局，造成周期性卡顿）
+                // 直接保持上一帧频谱，等待下一次有效数据。
                 if (!fft_spectrum || fft_spectrum.length === 0) {
-                    // 显示加载动画
-                    frequencyDomainChart.showLoading('default', {
-                        text: '等待数据...',
-                        color: '#8e44ad',
-                        textColor: '#666',
-                        maskColor: 'rgba(255, 255, 255, 0.8)',
-                        zlevel: 0
-                    });
-                    // 标记配置已重置，下次有数据时需要重新初始化
-                    frequencyDomainChart._configInitialized = false;
+                    debugLog("[updateFrequencyDomainChart] FFT为空，跳过本次更新");
                     return;
                 }
-                
-                // 如果有数据，隐藏加载动画
-                frequencyDomainChart.hideLoading();
+
+                // 如果之前显示过 loading，这里兜底隐藏（不强依赖）
+                try { frequencyDomainChart.hideLoading(); } catch (e) {}
                 
                 // 如果有数据，检查是否需要重新初始化配置
                 const needsReinit = !frequencyDomainChart._configInitialized;

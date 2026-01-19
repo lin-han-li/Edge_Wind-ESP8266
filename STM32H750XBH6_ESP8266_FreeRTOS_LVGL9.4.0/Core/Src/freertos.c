@@ -80,11 +80,32 @@ void HAL_Delay(uint32_t Delay)
 /* USER CODE BEGIN PM */
 
 #ifndef W25Q256_SELFTEST_ENABLE
-#define W25Q256_SELFTEST_ENABLE 1
+/* 默认关闭：避免每次上电都擦写外部 Flash。
+ * 需要自检时手动改为 1，或通过编译宏覆盖。
+ */
+#define W25Q256_SELFTEST_ENABLE 0
+#endif
+
+/* 自检等级：
+ * 1: 单扇区擦除 + 单页写入 + 读回校验（最快，推荐长期保留）
+ * 2: 增加跨页/跨扇区写入读回（更贴近真实存储使用）
+ * 3: 预留（可在后续加入 16MB 边界/更大范围测试）
+ */
+#ifndef W25Q256_SELFTEST_LEVEL
+/* 默认自检等级（仅在 W25Q256_SELFTEST_ENABLE=1 时生效） */
+#define W25Q256_SELFTEST_LEVEL 2
+#endif
+
+/* 内存映射读取校验（可选）：开启后会将 QSPI 切到 memory-mapped 再 memcpy 读回校验。
+ * 注意：memory-mapped 与 cache 行为相关，若你担心影响系统其他读写，保持 0 即可。
+ */
+#ifndef W25Q256_SELFTEST_USE_MEMORY_MAPPED
+#define W25Q256_SELFTEST_USE_MEMORY_MAPPED 0
 #endif
 
 #define W25Q256_SELFTEST_ADDR   (0x1FF0000u) /* 32MB Flash 末尾附近，避开常用数据区 */
 #define W25Q256_SELFTEST_LEN    (256u)       /* 单页测试 */
+#define W25Q256_CROSS_LEN       (512u)       /* 跨页/跨扇区测试长度 */
 
 static int8_t W25Q256_SelfTest_Small(void)
 {
@@ -143,6 +164,104 @@ static int8_t W25Q256_SelfTest_Small(void)
   }
 
   printf("[W25Q256] selftest PASS (erase+program+readback)\r\n");
+  return QSPI_W25Qxx_OK;
+}
+
+static int8_t W25Q256_SelfTest_CrossPageAndSector(void)
+{
+  const uint32_t base0 = W25Q256_SELFTEST_ADDR;          /* 4KB 扇区对齐 */
+  const uint32_t base1 = W25Q256_SELFTEST_ADDR + 0x1000; /* 下一个 4KB 扇区 */
+  const uint32_t start = base0 + 0x0F80u;                /* 故意靠近扇区末尾，触发跨扇区 */
+  const uint32_t len   = W25Q256_CROSS_LEN;              /* 512B：跨页且跨扇区 */
+
+  uint8_t tx[W25Q256_CROSS_LEN];
+  uint8_t rx[W25Q256_CROSS_LEN];
+
+  printf("[W25Q256] cross-sector test: erase 2 sectors, start=0x%08lX len=%lu\r\n",
+         (unsigned long)start, (unsigned long)len);
+
+  int8_t ret = QSPI_W25Qxx_SectorErase(base0);
+  printf("[W25Q256] erase sector0 @0x%08lX ret=%d\r\n", (unsigned long)base0, (int)ret);
+  if (ret != QSPI_W25Qxx_OK) return ret;
+
+  ret = QSPI_W25Qxx_SectorErase(base1);
+  printf("[W25Q256] erase sector1 @0x%08lX ret=%d\r\n", (unsigned long)base1, (int)ret);
+  if (ret != QSPI_W25Qxx_OK) return ret;
+
+  /* 擦除校验：读少量数据确认为 0xFF */
+  {
+    uint8_t blank[64];
+    ret = QSPI_W25Qxx_ReadBuffer(blank, base0, sizeof(blank));
+    if (ret != QSPI_W25Qxx_OK) return ret;
+    for (uint32_t i = 0; i < sizeof(blank); i++)
+    {
+      if (blank[i] != 0xFFu)
+      {
+        printf("[W25Q256] erase verify FAIL sector0 @+%lu =0x%02X\r\n",
+               (unsigned long)i, (unsigned int)blank[i]);
+        return (int8_t)W25Qxx_ERROR_Erase;
+      }
+    }
+
+    ret = QSPI_W25Qxx_ReadBuffer(blank, base1, sizeof(blank));
+    if (ret != QSPI_W25Qxx_OK) return ret;
+    for (uint32_t i = 0; i < sizeof(blank); i++)
+    {
+      if (blank[i] != 0xFFu)
+      {
+        printf("[W25Q256] erase verify FAIL sector1 @+%lu =0x%02X\r\n",
+               (unsigned long)i, (unsigned int)blank[i]);
+        return (int8_t)W25Qxx_ERROR_Erase;
+      }
+    }
+    printf("[W25Q256] erase verify PASS (both sectors blank)\r\n");
+  }
+
+  for (uint32_t i = 0; i < len; i++)
+  {
+    tx[i] = (uint8_t)((i * 37u) ^ 0x5Au);
+    rx[i] = 0;
+  }
+
+  ret = QSPI_W25Qxx_WriteBuffer(tx, start, len);
+  printf("[W25Q256] write buffer (cross) ret=%d\r\n", (int)ret);
+  if (ret != QSPI_W25Qxx_OK) return ret;
+
+  ret = QSPI_W25Qxx_ReadBuffer(rx, start, len);
+  printf("[W25Q256] read buffer (cross) ret=%d\r\n", (int)ret);
+  if (ret != QSPI_W25Qxx_OK) return ret;
+
+  if (memcmp(tx, rx, len) != 0)
+  {
+    for (uint32_t i = 0; i < len; i++)
+    {
+      if (tx[i] != rx[i])
+      {
+        printf("[W25Q256] cross verify FAIL @+%lu tx=0x%02X rx=0x%02X\r\n",
+               (unsigned long)i, (unsigned int)tx[i], (unsigned int)rx[i]);
+        break;
+      }
+    }
+    return (int8_t)W25Qxx_ERROR_TRANSMIT;
+  }
+
+#if W25Q256_SELFTEST_USE_MEMORY_MAPPED
+  ret = QSPI_W25Qxx_MemoryMappedMode();
+  printf("[W25Q256] enter memory-mapped ret=%d\r\n", (int)ret);
+  if (ret == QSPI_W25Qxx_OK)
+  {
+    uint8_t mm[W25Q256_CROSS_LEN];
+    memcpy(mm, (uint8_t *)0x90000000u + start, len);
+    if (memcmp(tx, mm, len) != 0)
+    {
+      printf("[W25Q256] memory-mapped verify FAIL\r\n");
+      return (int8_t)W25Qxx_ERROR_TRANSMIT;
+    }
+    printf("[W25Q256] memory-mapped verify PASS\r\n");
+  }
+#endif
+
+  printf("[W25Q256] cross-sector test PASS\r\n");
   return QSPI_W25Qxx_OK;
 }
 
@@ -345,6 +464,9 @@ void Main_Task(void *argument)
 #if W25Q256_SELFTEST_ENABLE
   osDelay(200); /* 让系统先跑起来，避免和启动阶段串口输出打架 */
   (void)W25Q256_SelfTest_Small();
+#if (W25Q256_SELFTEST_LEVEL >= 2)
+  (void)W25Q256_SelfTest_CrossPageAndSector();
+#endif
 #endif
 
   /* Infinite loop */
@@ -382,7 +504,6 @@ void ESP8266_Task(void *argument)
     ESP_Console_Poll();
     ESP_Update_Data_And_FFT();
     ESP_Post_Data();
-    ESP_Post_Heartbeat();
     osDelay(1);
   }
   /* USER CODE END ESP8266_Task */

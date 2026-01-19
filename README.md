@@ -8,6 +8,33 @@
 
 ---
 
+## 快速开始（Clone 后立即运行）
+
+```powershell
+# 1. 克隆仓库
+git clone https://github.com/你的用户名/Edge_Wind_System-ESP8266.git
+cd Edge_Wind_System-ESP8266
+
+# 2. 进入上位机目录
+cd Edge_Wind_System
+
+# 3. 双击运行服务器（自动创建虚拟环境、安装依赖）
+# Windows：双击 服务器开关.bat
+# 或手动：
+py -3.11 -m venv venv311
+.\venv311\Scripts\activate
+pip install -r requirements.txt
+python app.py
+
+# 4. 浏览器访问
+# http://localhost:5000
+# 默认账号：Edge_Wind / Gentle9532
+```
+
+> **注意**：需要 Python 3.11+，Windows 推荐使用 `py -3.11` 启动器。
+
+---
+
 ## 目录导航
 
 - [1. 项目总体结构](#1-项目总体结构)
@@ -33,12 +60,12 @@ Edge_Wind_System+ESP8266/
 │  ├─ app.py                       # Flask 程序入口（初始化、SocketIO、日志、DB、后台任务）
 │  ├─ edgewind.env                 # 运行配置（端口/推送频率/降采样/数据库等）
 │  ├─ requirements.txt             # Python 依赖（推荐 Python 3.11）
-│  ├─ templates/                   # 页面模板：overview/monitor/faults/settings/snapshots/login
+│  ├─ templates/                   # 页面模板：overview/monitor/history/faults/settings/snapshots/login
 │  ├─ static/                      # 静态资源 JS
 │  ├─ edgewind/
 │  │  ├─ routes/                   # pages/auth/api 路由
 │  │  ├─ socket_events.py          # WebSocket 事件（订阅房间、推送状态/监控数据）
-│  │  ├─ models.py                 # SQLAlchemy 模型（Device/WorkOrder/DataPoint 等）
+│  │  ├─ models.py                 # SQLAlchemy 模型（Device/WorkOrder/DataPoint/HistoryData 等）
 │  │  ├─ report_generator.py       # Word 工单导出（python-docx）
 │  │  └─ ...
 │  ├─ scripts/                     # PowerShell 控制台脚本（彩色交互式：启动/停止/状态）
@@ -188,12 +215,23 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 页面路由由 `edgewind/routes/pages.py` 定义（均需登录）：
 
 - `/` → 概览 `overview.html`
-- `/overview`：系统概览
-- `/monitor`：实时监测（波形/FFT/节点列表/性能面板）
+- `/overview`：系统概览（节点状态、系统统计）
+- `/monitor`：实时监测（波形/FFT/节点列表/故障日志/性能面板）
+- `/history`：历史曲线（4通道平均值回放、支持离线节点、时段筛选、节点搜索）
 - `/faults`：故障管理（工单、诊断、导出）
 - `/settings`：系统设置（阈值/配置/清理）
 - `/snapshots`：快照与事件回放
 - `/login`：登录页（`edgewind/routes/auth.py`）
+
+### 5.1 历史曲线功能（新增）
+
+历史曲线页面 `/history` 提供以下功能：
+- **支持离线节点**：可查看已不在线但有历史数据的节点
+- **节点搜索**：顶部搜索框支持快速过滤节点
+- **时段筛选**：支持自定义开始/结束时间，或快捷选择近5分钟/30分钟/2小时/24小时
+- **设置记忆**：回放点数、时段、选中节点等设置会自动保存到 localStorage
+- **单独删除**：可删除指定节点的所有历史数据（不影响其他节点）
+- **缩放交互**：与实时监测一致的图表缩放/平移/重置操作
 
 ---
 
@@ -262,15 +300,23 @@ Socket.IO 服务在 `app.py` 初始化，事件在 `edgewind/socket_events.py` �
 
 ---
 
-## 8. 工单/故障/快照与导出
+## 8. 工单/故障/快照/历史数据与导出
 
 后端 API（节选）：
 
+### 8.1 故障与工单
 - `GET /api/faults`：故障日志
 - `GET /api/work_orders`：工单列表
 - `PATCH /api/work_orders/<id>`：更新工单状态
 - `POST /api/workorder/export`：导出 Word 工单（`.docx`）
 - `GET /api/snapshots` / `GET /api/fault_snapshots`：快照相关
+
+### 8.2 历史曲线数据（新增）
+- `GET /api/history_nodes`：获取所有有历史数据的节点列表（含离线节点）
+- `GET /api/history_data`：查询历史曲线数据
+  - 参数：`device_id`（必填）、`limit`（默认600，最大20000）、`start_time`、`end_time`
+- `POST /api/delete_node_history`：删除指定节点的所有历史数据
+  - Body：`{ "device_id": "节点ID" }`
 
 工单导出实现：
 - 后端：`edgewind/report_generator.py` + `send_file(as_attachment=True)`

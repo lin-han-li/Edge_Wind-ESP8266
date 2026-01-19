@@ -238,3 +238,5 @@ EdgeWind_Client/installer/
 EdgeWind_Client/EdgeWind_build.ico
 EdgeWind_Client/Client_build.ico
 EdgeWind_Client/Client_setup_build.ico
+EdgeWind_Client/dist/
+EdgeWind_Client/build/

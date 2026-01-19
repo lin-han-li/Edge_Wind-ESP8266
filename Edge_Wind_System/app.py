@@ -274,7 +274,7 @@ db_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="DB-Worker")
 # ==================== 注册蓝图 ====================
 from edgewind.routes.auth import auth_bp
 from edgewind.routes.pages import pages_bp
-from edgewind.routes.api import api_bp, init_api_blueprint, register_device, upload_data, node_heartbeat
+from edgewind.routes.api import api_bp, init_api_blueprint, register_device, upload_data, node_heartbeat, delete_node_history
 
 # 初始化API蓝图
 init_api_blueprint(app, socketio, db_executor, active_nodes, node_commands)
@@ -286,12 +286,13 @@ app.register_blueprint(api_bp)
 
 app.logger.info("所有路由蓝图已注册")
 
-# CSRF 豁免：设备上报接口（避免影响模拟器/硬件）
+# CSRF 豁免：设备上报接口（避免影响模拟器/硬件）+ 内部管理API
 if csrf is not None:
     csrf.exempt(register_device)
     csrf.exempt(upload_data)
     csrf.exempt(node_heartbeat)
-    app.logger.info("CSRF：已豁免设备上报接口（/api/register、/api/upload、/api/node/heartbeat）")
+    csrf.exempt(delete_node_history)  # 历史数据删除API
+    app.logger.info("CSRF：已豁免设备上报接口和内部管理API")
 
 # ==================== WebSocket事件初始化 ====================
 from edgewind.socket_events import init_socket_events

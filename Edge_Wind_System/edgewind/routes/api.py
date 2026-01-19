@@ -5,7 +5,7 @@ API路由蓝图
 from flask import Blueprint, request, jsonify
 from flask_login import login_required
 from datetime import datetime, timedelta
-from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot
+from edgewind.models import db, Device, DataPoint, WorkOrder, SystemConfig, FaultSnapshot, HistoryData
 from edgewind.knowledge_graph import FAULT_KNOWLEDGE_GRAPH, FAULT_CODE_MAP, generate_ai_report, get_fault_knowledge_graph
 from edgewind.utils import (
     save_to_buffer, get_latest_normal_data, get_latest_fault_data,
@@ -671,6 +671,22 @@ def node_heartbeat():
         else:
             # 正常帧：写入缓存
             _last_processed_cache[node_id] = processed_data
+            
+            # 3.6) 保存历史数据（用于历史曲线回放）
+            # 仅对正常帧存储，避免坏帧污染历史数据
+            try:
+                history_record = HistoryData(
+                    device_id=node_id,
+                    voltage_pos=processed_data.get('voltage', 0),
+                    voltage_neg=processed_data.get('voltage_neg', 0),
+                    current=processed_data.get('current', 0),
+                    leakage=processed_data.get('leakage', 0)
+                )
+                db.session.add(history_record)
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                logger.warning(f"[HistoryData] 保存历史数据失败: {node_id} - {e}")
 
         # 4. Save to buffer
         if fault_code == 'E00':
@@ -1608,7 +1624,12 @@ def get_fault_snapshots_events():
         device_id = request.args.get('device_id')
         fault_code = request.args.get('fault_code')
         snapshot_type = request.args.get('snapshot_type')
-        limit = min(int(request.args.get('limit', 500)), 1000)
+        # limit=0 或 limit=all 表示不限制（加载全部历史）
+        limit_param = request.args.get('limit', '5000')
+        if limit_param.lower() == 'all' or limit_param == '0':
+            limit = None  # 不限制
+        else:
+            limit = min(int(limit_param), 50000)  # 最大5万条原始记录
 
         query = FaultSnapshot.query
         if device_id:
@@ -1618,7 +1639,15 @@ def get_fault_snapshots_events():
         if snapshot_type:
             query = query.filter_by(snapshot_type=snapshot_type)
 
-        snapshots = query.order_by(FaultSnapshot.timestamp.desc()).limit(limit).all()
+        # 获取总数（用于前端显示）
+        total_count = query.count()
+        
+        # 查询快照
+        query = query.order_by(FaultSnapshot.timestamp.desc())
+        if limit is not None:
+            snapshots = query.limit(limit).all()
+        else:
+            snapshots = query.all()
 
         # 按“设备 + 故障代码 + 本地时间(秒)”分组
         events_dict = {}
@@ -1635,7 +1664,15 @@ def get_fault_snapshots_events():
                 }
             events_dict[key]['snapshot_count'] += 1
 
-        return jsonify({'success': True, 'events': list(events_dict.values())})
+        events_list = list(events_dict.values())
+        return jsonify({
+            'success': True,
+            'events': events_list,
+            'total_snapshots': total_count,           # 原始快照记录总数
+            'event_count': len(events_list),          # 当前返回的事件数
+            'loaded_snapshots': len(snapshots),       # 本次加载的快照数
+            'has_more': limit is not None and len(snapshots) >= limit  # 是否还有更多
+        })
     except Exception as e:
         logger.error(f"获取故障快照事件失败: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -1863,7 +1900,7 @@ def admin_config():
 @api_bp.route('/admin/cleanup_old_data', methods=['POST'])
 @login_required
 def admin_cleanup_old_data():
-    """按保留天数清理历史数据（波形数据 + 已完成工单）"""
+    """按保留天数清理历史数据（波形数据 + 历史曲线数据 + 已完成工单）"""
     try:
         payload = request.get_json() or {}
         retention_days = int(payload.get('retention_days', 30))
@@ -1875,7 +1912,10 @@ def admin_cleanup_old_data():
         # 1) 删除过期波形数据
         datapoints_deleted = DataPoint.query.filter(DataPoint.timestamp < cutoff).delete(synchronize_session=False)
 
-        # 2) 删除已完成工单（resolved/fixed）
+        # 2) 删除过期历史曲线数据
+        history_deleted = HistoryData.query.filter(HistoryData.timestamp < cutoff).delete(synchronize_session=False)
+
+        # 3) 删除已完成工单（resolved/fixed）
         workorders_deleted = WorkOrder.query.filter(
             WorkOrder.fault_time < cutoff,
             WorkOrder.status.in_(['resolved', 'fixed'])
@@ -1886,6 +1926,7 @@ def admin_cleanup_old_data():
             'success': True,
             'details': {
                 'datapoints_deleted': int(datapoints_deleted or 0),
+                'history_deleted': int(history_deleted or 0),
                 'workorders_deleted': int(workorders_deleted or 0)
             }
         }), 200
@@ -1897,10 +1938,11 @@ def admin_cleanup_old_data():
 @api_bp.route('/admin/clear_all_data', methods=['POST'])
 @login_required
 def admin_clear_all_data():
-    """清空所有历史数据（高危）：波形数据 + 工单 + 故障快照"""
+    """清空所有历史数据（高危）：波形数据 + 历史曲线数据 + 工单 + 故障快照"""
     try:
         # 注意：保留用户/设备表，避免系统不可登录或设备列表丢失
         datapoints_deleted = DataPoint.query.delete(synchronize_session=False)
+        history_deleted = HistoryData.query.delete(synchronize_session=False)
         workorders_deleted = WorkOrder.query.delete(synchronize_session=False)
         snapshots_deleted = FaultSnapshot.query.delete(synchronize_session=False)
         db.session.commit()
@@ -1908,6 +1950,7 @@ def admin_clear_all_data():
             'success': True,
             'details': {
                 'datapoints_deleted': int(datapoints_deleted or 0),
+                'history_deleted': int(history_deleted or 0),
                 'workorders_deleted': int(workorders_deleted or 0),
                 'snapshots_deleted': int(snapshots_deleted or 0)
             }
@@ -1989,4 +2032,210 @@ def export_workorder_docx():
         logger.error(f"[workorder/export] 导出失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== 历史曲线数据API ====================
+
+MAX_HISTORY_LIMIT = 20000  # 最大返回点数
+
+@api_bp.route('/history_nodes', methods=['GET'])
+@login_required
+def get_history_nodes():
+    """
+    获取所有有历史数据的节点列表（包括离线节点）
+    用于历史曲线页面的节点选择
+    """
+    try:
+        # 从 HistoryData 表中获取所有不重复的 device_id
+        from sqlalchemy import func
+        history_nodes = db.session.query(
+            HistoryData.device_id,
+            func.count(HistoryData.id).label('record_count'),
+            func.max(HistoryData.timestamp).label('last_record')
+        ).group_by(HistoryData.device_id).all()
+        
+        # 获取当前在线的节点列表
+        current_time = time.time()
+        online_node_ids = set()
+        for node_id, node_info in active_nodes.items():
+            if current_time - node_info['timestamp'] <= NODE_TIMEOUT:
+                online_node_ids.add(node_id)
+        
+        # 构建节点列表
+        nodes = []
+        for row in history_nodes:
+            device_id = row.device_id
+            record_count = row.record_count
+            last_record = row.last_record
+            is_online = device_id in online_node_ids
+            
+            # 转换时间为北京时间显示
+            last_record_str = None
+            if last_record:
+                last_record_str = iso_beijing(last_record, with_seconds=True)
+            
+            nodes.append({
+                'device_id': device_id,
+                'node_id': device_id,  # 兼容前端
+                'status': 'online' if is_online else 'offline',
+                'record_count': record_count,
+                'last_record': last_record_str
+            })
+        
+        # 按在线状态和记录数排序（在线优先，记录数多的优先）
+        nodes.sort(key=lambda x: (0 if x['status'] == 'online' else 1, -x['record_count']))
+        
+        return jsonify({
+            'success': True,
+            'nodes': nodes,
+            'count': len(nodes)
+        })
+    except Exception as e:
+        logger.error(f"[history_nodes] 获取历史节点列表失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_bp.route('/history_data', methods=['GET'])
+@login_required
+def get_history_data():
+    """
+    查询历史曲线数据（用于历史曲线回放页面）
+    
+    参数：
+      - device_id: 设备ID（必填）
+      - limit: 返回记录数（默认600，最大20000）
+      - start_time: 开始时间（可选，格式：YYYY-MM-DD HH:MM:SS 或 ISO格式）
+      - end_time: 结束时间（可选，格式：YYYY-MM-DD HH:MM:SS 或 ISO格式）
+    
+    返回：
+      - success: 是否成功
+      - data: 时间序列数据数组
+      - total: 总记录数（满足条件的）
+    """
+    try:
+        device_id = request.args.get('device_id')
+        if not device_id:
+            return jsonify({'success': False, 'error': '缺少 device_id 参数'}), 400
+        
+        # 解析 limit 参数
+        try:
+            limit = int(request.args.get('limit', 600))
+            limit = max(1, min(limit, MAX_HISTORY_LIMIT))
+        except ValueError:
+            limit = 600
+        
+        # 解析时间范围参数
+        start_time_str = request.args.get('start_time', '').strip()
+        end_time_str = request.args.get('end_time', '').strip()
+        
+        def parse_time(time_str):
+            """解析时间字符串，支持多种格式"""
+            if not time_str:
+                return None
+            # 尝试多种格式
+            formats = [
+                '%Y-%m-%d %H:%M:%S',
+                '%Y-%m-%d %H:%M',
+                '%Y-%m-%dT%H:%M:%S',
+                '%Y-%m-%dT%H:%M:%S%z',
+                '%Y-%m-%dT%H:%M:%S+08:00',
+                '%Y/%m/%d %H:%M:%S',
+                '%Y/%m/%d %H:%M',
+            ]
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(time_str.replace('+08:00', ''), fmt.replace('%z', '').replace('+08:00', ''))
+                    # 假设输入是北京时间，转换为 UTC 存储
+                    return dt - timedelta(hours=8)
+                except ValueError:
+                    continue
+            return None
+        
+        start_time = parse_time(start_time_str)
+        end_time = parse_time(end_time_str)
+        
+        # 构建查询
+        query = HistoryData.query.filter_by(device_id=device_id)
+        
+        if start_time:
+            query = query.filter(HistoryData.timestamp >= start_time)
+        if end_time:
+            query = query.filter(HistoryData.timestamp <= end_time)
+        
+        # 获取总数
+        total_count = query.count()
+        
+        # 按时间排序并限制数量
+        # 如果设置了 start_time，从起点向后取 limit 条
+        # 如果只设置了 end_time 或都没设置，取最近的 limit 条
+        if start_time:
+            records = query.order_by(HistoryData.timestamp.asc()).limit(limit).all()
+        else:
+            records = query.order_by(HistoryData.timestamp.desc()).limit(limit).all()
+            records = list(reversed(records))  # 反转为时间正序
+        
+        # 转换为字典格式
+        data = [r.to_dict() for r in records]
+        
+        return jsonify({
+            'success': True,
+            'data': data,
+            'total': total_count,
+            'limit': limit,
+            'device_id': device_id,
+            'start_time': start_time_str or None,
+            'end_time': end_time_str or None
+        })
+    
+    except Exception as e:
+        logger.error(f"[history_data] 查询历史数据失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_bp.route('/delete_node_history', methods=['POST'])
+@login_required
+def delete_node_history():
+    """
+    删除指定节点的所有历史数据
+    
+    参数（JSON body）：
+        - device_id: 设备ID
+    
+    返回：
+        - success: 是否成功
+        - deleted_count: 删除的记录数
+    """
+    try:
+        data = request.get_json() or {}
+        device_id = data.get('device_id', '').strip()
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': '缺少 device_id 参数'}), 400
+        
+        # 查询该节点的历史数据数量
+        count = HistoryData.query.filter_by(device_id=device_id).count()
+        
+        if count == 0:
+            return jsonify({
+                'success': True,
+                'deleted_count': 0,
+                'message': f'节点 {device_id} 没有历史数据'
+            })
+        
+        # 删除该节点的所有历史数据
+        HistoryData.query.filter_by(device_id=device_id).delete()
+        db.session.commit()
+        
+        logger.info(f"[history_data] 已删除节点 {device_id} 的 {count} 条历史数据")
+        
+        return jsonify({
+            'success': True,
+            'deleted_count': count,
+            'message': f'已删除节点 {device_id} 的 {count} 条历史数据'
+        })
+    
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"[history_data] 删除历史数据失败: {device_id} - {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

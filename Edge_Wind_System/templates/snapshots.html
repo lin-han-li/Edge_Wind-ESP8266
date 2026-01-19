@@ -219,6 +219,18 @@
         </div>
     </div>
     
+    <!-- 统计信息 -->
+    <div class="d-flex justify-content-between align-items-center mb-3" id="statsBar">
+        <div id="snapshotStats" class="text-muted small">
+            <span id="statsText">加载中...</span>
+        </div>
+        <div>
+            <button class="btn btn-outline-primary btn-sm" id="loadAllBtn" onclick="loadAllSnapshots()" style="display:none;">
+                <i class="bi bi-download"></i> 加载全部历史
+            </button>
+        </div>
+    </div>
+    
     <!-- 快照列表 -->
     <div id="snapshotsList">
         <div class="text-center py-5">
@@ -294,11 +306,12 @@
         showSuccess('数据已刷新');
     }
     
-    // 加载快照列表
-    async function loadSnapshots() {
+    // 加载快照列表（默认加载最近数据）
+    async function loadSnapshots(loadAll = false) {
         try {
-            console.log('[Snapshots] 开始加载快照列表...');
-            const response = await fetch('/api/fault_snapshots');
+            console.log('[Snapshots] 开始加载快照列表...' + (loadAll ? '（全部历史）' : ''));
+            const url = loadAll ? '/api/fault_snapshots?limit=all' : '/api/fault_snapshots';
+            const response = await fetch(url);
             const result = await response.json();
             
             if (result.success) {
@@ -306,17 +319,61 @@
                 currentEvents = result.events;
                 renderSnapshotsList(result.events);
                 updateDeviceFilter(result.events);
+                updateStatsBar(result);
             } else {
                 console.error('[Snapshots] 加载失败:', result.message);
                 showError('加载失败: ' + (result.message || '未知错误'));
                 // 即使失败也显示空列表
                 renderSnapshotsList([]);
+                updateStatsBar(null);
             }
         } catch (error) {
             console.error('[Snapshots] 加载快照失败:', error);
             showError('加载失败: ' + error.message);
             // 显示空列表
             renderSnapshotsList([]);
+            updateStatsBar(null);
+        }
+    }
+    
+    // 加载全部历史数据
+    async function loadAllSnapshots() {
+        const btn = document.getElementById('loadAllBtn');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> 加载中...';
+        btn.disabled = true;
+        
+        try {
+            await loadSnapshots(true);
+            showSuccess('已加载全部历史快照');
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+    
+    // 更新统计栏
+    function updateStatsBar(result) {
+        const statsText = document.getElementById('statsText');
+        const loadAllBtn = document.getElementById('loadAllBtn');
+        
+        if (!result) {
+            statsText.textContent = '加载失败';
+            loadAllBtn.style.display = 'none';
+            return;
+        }
+        
+        const eventCount = result.event_count || 0;
+        const totalSnapshots = result.total_snapshots || 0;
+        const loadedSnapshots = result.loaded_snapshots || 0;
+        const hasMore = result.has_more || false;
+        
+        if (hasMore) {
+            statsText.innerHTML = `显示 <strong>${eventCount}</strong> 个故障事件（已加载 ${loadedSnapshots} / ${totalSnapshots} 条快照记录）`;
+            loadAllBtn.style.display = 'inline-block';
+        } else {
+            statsText.innerHTML = `共 <strong>${eventCount}</strong> 个故障事件（${totalSnapshots} 条快照记录）`;
+            loadAllBtn.style.display = 'none';
         }
     }
     

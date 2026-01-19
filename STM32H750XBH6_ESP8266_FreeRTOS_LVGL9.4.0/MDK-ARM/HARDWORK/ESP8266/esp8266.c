@@ -39,6 +39,28 @@ static inline float ESP_SafeFloat(float v)
     return v;
 }
 
+/* 安全追加格式化字符串到缓冲区（防止 http_packet_buf 越界导致“偶发坏帧/服务器解析失败/节点重连”） */
+static inline int ESP_Appendf(char **pp, const char *end, const char *fmt, ...)
+{
+    if (!pp || !*pp || !end || *pp >= end)
+        return 0;
+    va_list ap;
+    va_start(ap, fmt);
+    int rem = (int)(end - *pp);
+    int n = vsnprintf(*pp, (size_t)rem, fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return 0;
+    if (n >= rem)
+    {
+        /* 截断：把指针推进到末尾，返回失败 */
+        *pp = (char *)end;
+        return 0;
+    }
+    *pp += n;
+    return 1;
+}
+
 // =================================================================================
 // 1. STM32H7 特有的内存管理与 Cache 维护
 // =================================================================================
@@ -136,7 +158,7 @@ static void ESP_Log(const char *format, ...);
 static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout);
 static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char *reply2, uint32_t timeout);
 static void ESP_Clear_Error_Flags(void);
-static void Helper_FloatArray_To_String(char *dest, float *data, int count, int step);
+static int Helper_FloatArray_To_String(char *dest, const char *end, float *data, int count, int step);
 static void ESP_Exit_Transparent_Mode(void);
 static uint8_t ESP_Exit_Transparent_Mode_Strict(uint32_t timeout_ms);
 static void ESP_Uart2_Drain(uint32_t ms);
@@ -550,11 +572,21 @@ static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, flo
 
     // 4. 恢复波形 (因为 arm_rfft_fast_f32 是 In-Place 运算，会破坏原 buffer)
     // 这里为了 JSON 发送原始波形，需要重新生成一遍
+    double sum = 0.0;
     for (i = 0; i < WAVEFORM_POINTS; i++)
     {
         float phase = (float)ch_id * 0.5f;
-        node_channels[ch_id].waveform[i] = node_channels[ch_id].current_value + ripple_amp * arm_sin_f32(2.0f * PI * 50.0f * ((float)i * 0.0005f) + phase) + (ripple_amp * 0.3f) * arm_sin_f32(2.0f * PI * 150.0f * ((float)i * 0.0005f));
+        float y = node_channels[ch_id].current_value +
+                  ripple_amp * arm_sin_f32(2.0f * PI * 50.0f * ((float)i * 0.0005f) + phase) +
+                  (ripple_amp * 0.3f) * arm_sin_f32(2.0f * PI * 150.0f * ((float)i * 0.0005f));
+        node_channels[ch_id].waveform[i] = y;
+        sum += (double)y;
     }
+
+    /* 卡片显示值改为“本帧波形平均值（mean）”
+     * - 之前 current_value 是模拟瞬时值（带慢变化），不是严格平均值
+     * - 这里用 mean 更符合“平均值”语义，并且对噪声/非整周期截断更鲁棒 */
+    node_channels[ch_id].current_value = ESP_SafeFloat((float)(sum / (double)WAVEFORM_POINTS));
 
     if (ch_id == 3)
         time_t += 0.05f; // 时间步进
@@ -790,61 +822,85 @@ void ESP_Post_Data(void)
 
     // 开始构建 JSON
     char *p = (char *)http_packet_buf;
+    const char *end = (const char *)http_packet_buf + sizeof(http_packet_buf);
     uint32_t body_len;
     uint32_t header_reserve_len = 256;
     int header_len;
     uint32_t total_len;
+    static uint32_t s_seq = 0;
+    uint32_t seq = ++s_seq;
 
     // JSON Header
-    p += sprintf(p, "{\"node_id\": \"%s\",\"status\": \"online\",\"fault_code\": \"%s\",\"channels\": [", NODE_ID, g_fault_code);
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"channels\":[",
+                    NODE_ID, g_fault_code, (unsigned long)seq))
+        return;
 
     // 循环写入 4 个通道的数据
     for (int i = 0; i < 4; i++)
     {
         float cv = ESP_SafeFloat(node_channels[i].current_value);
-        p += sprintf(p, "{"
-                        "\"id\": %d, \"channel_id\": %d,"
-                        "\"label\": \"%s\", \"name\": \"%s\","
-                        "\"value\": %.2f, \"current_value\": %.2f,"
-                        "\"unit\": \"%s\","
-                        "\"waveform\": [",
-                     node_channels[i].id, node_channels[i].id,
-                     node_channels[i].label, node_channels[i].label, // name冗余label
-                     cv, cv,
-                     node_channels[i].unit);
+        if (!ESP_Appendf(&p, end,
+                         "{"
+                         "\"id\":%d,\"channel_id\":%d,"
+                         "\"label\":\"%s\",\"name\":\"%s\","
+                         "\"value\":%.2f,\"current_value\":%.2f,"
+                         "\"unit\":\"%s\","
+                         "\"waveform\":[",
+                         node_channels[i].id, node_channels[i].id,
+                         node_channels[i].label, node_channels[i].label, // name冗余label
+                         (double)cv, (double)cv,
+                         node_channels[i].unit))
+            return;
 
-        // 波形数据 (STEP=4, 发256点)
-        Helper_FloatArray_To_String(p, node_channels[i].waveform, WAVEFORM_POINTS, WAVEFORM_SEND_STEP);
+        // 波形数据
+        if (!Helper_FloatArray_To_String(p, end, node_channels[i].waveform, WAVEFORM_POINTS, WAVEFORM_SEND_STEP))
+            return;
         p += strlen(p);
 
         // 频谱数据
-        p += sprintf(p, "], \"fft_spectrum\": [");
-        Helper_FloatArray_To_String(p, node_channels[i].fft_data, FFT_POINTS, 1);
+        if (!ESP_Appendf(&p, end, "],\"fft_spectrum\":["))
+            return;
+        if (!Helper_FloatArray_To_String(p, end, node_channels[i].fft_data, FFT_POINTS, 1))
+            return;
         p += strlen(p);
 
         // 结束当前 channel
-        p += sprintf(p, "]}");
+        if (!ESP_Appendf(&p, end, "]}"))
+            return;
         if (i < 3)
-            p += sprintf(p, ","); // 逗号分隔
+        {
+            if (!ESP_Appendf(&p, end, ",")) // 逗号分隔
+                return;
+        }
     }
 
-    p += sprintf(p, "]}"); // JSON End
+    if (!ESP_Appendf(&p, end, "]}")) // JSON End
+        return;
 
     body_len = (uint32_t)(p - (char *)http_packet_buf);
+    if (body_len == 0 || body_len > (sizeof(http_packet_buf) - header_reserve_len - 64u))
+    {
+        // 保护：长度异常直接丢弃，避免 memmove 越界导致后续随机坏帧
+        return;
+    }
 
     // 拼接 HTTP Header
     // 先把 Body 往后挪，腾出 Header 空间
     memmove(http_packet_buf + header_reserve_len, http_packet_buf, body_len);
-    header_len = sprintf((char *)http_packet_buf,
-                         "POST /api/node/heartbeat HTTP/1.1\r\n"
-                         "Host: %s:%d\r\n"
-                         "Content-Type: application/json\r\n"
-                         "Content-Length: %u\r\n"
-                         "\r\n",
-                         SERVER_IP, SERVER_PORT, body_len);
+    header_len = snprintf((char *)http_packet_buf, header_reserve_len,
+                          "POST /api/node/heartbeat HTTP/1.1\r\n"
+                          "Host: %s:%d\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %lu\r\n"
+                          "\r\n",
+                          SERVER_IP, SERVER_PORT, (unsigned long)body_len);
+    if (header_len <= 0 || (uint32_t)header_len >= header_reserve_len)
+        return;
     // 把 Body 接回来
     memmove(http_packet_buf + header_len, http_packet_buf + header_reserve_len, body_len);
     total_len = (uint32_t)header_len + body_len;
+    if (total_len > sizeof(http_packet_buf))
+        return;
 
     // 统计发送状态
     static uint32_t tx_try = 0, tx_ok = 0, tx_busy = 0, tx_err = 0;
@@ -1578,17 +1634,30 @@ static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char 
     return 0;
 }
 
-static void Helper_FloatArray_To_String(char *dest, float *data, int count, int step)
+static int Helper_FloatArray_To_String(char *dest, const char *end, float *data, int count, int step)
 {
     int i;
     for (i = 0; i < count; i += step)
     {
         float v = ESP_SafeFloat(data[i]);
-        dest += sprintf(dest, "%.1f", v);
+        int rem = (int)(end - dest);
+        if (rem <= 2)
+            return 0;
+        int n = snprintf(dest, (size_t)rem, "%.1f", (double)v);
+        if (n < 0 || n >= rem)
+            return 0;
+        dest += n;
         if (i + step < count)
+        {
+            if (dest + 1 >= end)
+                return 0;
             *dest++ = ',';
+        }
     }
+    if (dest >= end)
+        return 0;
     *dest = 0;
+    return 1;
 }
 
 static void ESP_Exit_Transparent_Mode(void)

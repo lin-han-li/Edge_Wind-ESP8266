@@ -177,3 +177,31 @@ class FaultSnapshot(db.Model):
             }
         }
 
+
+class HistoryData(db.Model):
+    """历史数据表 - 存储每帧上报的4通道平均值，用于历史曲线回放"""
+    __tablename__ = 'history_data'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    device_id = db.Column(db.String(100), nullable=False, index=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    
+    # 4通道平均值
+    voltage_pos = db.Column(db.Float)   # 直流母线(+)
+    voltage_neg = db.Column(db.Float)   # 直流母线(-)
+    current = db.Column(db.Float)       # 负载电流
+    leakage = db.Column(db.Float)       # 漏电流
+    
+    def to_dict(self):
+        """转换为字典格式（时间为北京时间）"""
+        from edgewind.time_utils import iso_beijing
+        return {
+            'id': self.id,
+            'device_id': self.device_id,
+            'timestamp': iso_beijing(self.timestamp, with_seconds=True),
+            'voltage_pos': self.voltage_pos,
+            'voltage_neg': self.voltage_neg,
+            'current': self.current,
+            'leakage': self.leakage
+        }
+

@@ -29,6 +29,13 @@ def monitor():
     return render_template('monitor.html')
 
 
+@pages_bp.route('/history')
+@login_required
+def history():
+    """历史曲线页面"""
+    return render_template('history.html')
+
+
 @pages_bp.route('/faults')
 @login_required
 def faults():

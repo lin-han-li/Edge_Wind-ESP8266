@@ -32,6 +32,7 @@
         border-radius: 50%;
         vertical-align: middle;
     }
+
 </style>
 {% endblock %}
 
@@ -46,7 +47,7 @@
                 </h6>
             </div>
             <div class="card-body p-0">
-                <div class="list-group list-group-flush" id="nodeList" style="max-height: 600px; overflow-y: auto;">
+                <div class="list-group list-group-flush" id="nodeList" style="max-height: 150px; overflow-y: auto;">
                     <!-- 边缘节点列表将通过JavaScript动态生成 -->
                     <div class="text-center text-muted py-4">
                         <i class="bi bi-hourglass-split"></i> 加载中...
@@ -56,7 +57,7 @@
         </div>
         
         <!-- 性能监控面板 -->
-        <div class="card border-success">
+        <div class="card border-success mb-3">
             <div class="card-header bg-success text-white py-2">
                 <h6 class="mb-0 small">
                     <i class="bi bi-speedometer2"></i> 性能监控
@@ -82,6 +83,31 @@
                         <div class="text-muted">渲染延迟</div>
                         <div class="fw-bold text-warning" id="perf-render-time">-- ms</div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 系统故障日志（移到左侧边栏） -->
+        <div class="card border-warning">
+            <div class="card-header bg-warning text-dark py-2">
+                <h6 class="mb-0 small">
+                    <i class="bi bi-clock-history"></i> 系统故障日志
+                </h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 380px; overflow-y: auto;">
+                    <table class="table table-sm table-hover align-middle mb-0 small">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th style="width: 30%;">时间</th>
+                                <th style="width: 35%;">节点</th>
+                                <th style="width: 35%;">状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fault-log-body">
+                            <!-- 日志条目将通过JavaScript动态添加 -->
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -226,30 +252,6 @@
                 </div>
             </div>
         </div>
-
-        <!-- 故障日志表 -->
-        <div class="card border-0 shadow-sm mt-4">
-            <div class="card-header bg-white py-3">
-                <h6 class="mb-0 fw-bold"><i class="bi bi-clock-history me-2"></i>系统故障日志</h6>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
-                    <table class="table table-hover align-middle mb-0">
-                        <thead class="table-light sticky-top">
-                            <tr>
-                                <th>时间</th>
-                                <th>边缘节点ID</th>
-                                <th>状态码</th>
-                                <th>详细信息</th>
-                            </tr>
-                        </thead>
-                        <tbody id="fault-log-body">
-                            <!-- 日志条目将通过JavaScript动态添加 -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
     </div>
 </div>
 {% endblock %}
@@ -374,15 +376,6 @@
                 ? `/snapshots?device_id=${encodeURIComponent(deviceId)}&fault_code=${encodeURIComponent(faultCode)}&timestamp=${encodeURIComponent(ts)}`
                 : '';
 
-            const faultNames = {
-                "E00": "系统正常",
-                "E01": "交流窜入",
-                "E02": "绝缘故障",
-                "E03": "电容老化",
-                "E04": "IGBT开路",
-                "E05": "接地故障"
-            };
-            const msg = faultNames[faultCode] || `未知故障 (${faultCode})`;
             const isFault = faultCode !== 'E00';
             const codeBadgeClass = isFault ? 'bg-danger' : 'bg-success';
 
@@ -392,26 +385,22 @@
                 : ``;
 
             const tr = document.createElement('tr');
-            // 安全：timeStr/nodeId/msg 均可能来自数据库/设备上报，渲染到 innerHTML 前必须做 HTML 转义
-            const safeTime = escapeHtml(timeStr);
-            const safeNodeId = escapeHtml(nodeId);
-            const safeMsg = escapeHtml(msg);
+            // 安全：timeStr/nodeId 均可能来自数据库/设备上报，渲染到 innerHTML 前必须做 HTML 转义
+            // 紧凑格式：只显示时分秒
+            const safeTime = escapeHtml(timeStr ? timeStr.split(' ')[1] || timeStr : '');
+            // 节点名截断显示
+            const shortNodeId = nodeId && nodeId.length > 10 ? nodeId.substring(0, 10) + '...' : nodeId;
+            const safeNodeId = escapeHtml(shortNodeId);
             const safeCode = escapeHtml(faultCode);
             tr.innerHTML = `
-                <td>${safeTime}</td>
-                <td>${safeNodeId}</td>
+                <td title="${escapeHtml(timeStr)}">${safeTime}</td>
+                <td title="${escapeHtml(nodeId)}">${safeNodeId}</td>
                 <td>
                     ${dotHtml}
                     ${canJump ? `<a href="${jumpUrl}" class="text-decoration-none" title="点击跳转故障快照">
                         <span class="badge ${codeBadgeClass}">${safeCode}</span>
                     </a>` : `<span class="badge ${codeBadgeClass}">${safeCode}</span>`}
-                    <span class="badge ${st.cls} ms-2">${st.text}</span>
-                </td>
-                <td>
-                    ${safeMsg}
-                    ${canJump ? `<a href="${jumpUrl}" class="ms-2 small text-primary text-decoration-none" title="查看故障快照">
-                        <i class="bi bi-camera"></i> 快照
-                    </a>` : ''}
+                    <span class="badge ${st.cls}">${st.text}</span>
                 </td>
             `;
             tbody.appendChild(tr);
@@ -1426,8 +1415,8 @@
         const row = document.createElement('tr');
         row.setAttribute('data-empty', '1');
         row.innerHTML = `
-            <td colspan="4" class="text-center text-muted py-3">
-                暂无故障记录（当检测到故障/恢复时会自动追加）
+            <td colspan="3" class="text-center text-muted py-2">
+                <small>暂无故障记录</small>
             </td>
         `;
         tbody.appendChild(row);

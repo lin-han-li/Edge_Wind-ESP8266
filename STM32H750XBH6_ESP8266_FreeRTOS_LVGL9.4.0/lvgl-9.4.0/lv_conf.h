@@ -375,7 +375,7 @@
 #endif
 
 /** Accelerate blends, fills, etc. with STM32 DMA2D */
-/* [Optimization] Enabled for STM32H7 */
+/* Restored: enable DMA2D acceleration */
 #define LV_USE_DRAW_DMA2D 1
 #if LV_USE_DRAW_DMA2D
     #define LV_DRAW_DMA2D_HAL_INCLUDE "stm32h7xx_hal.h"
@@ -969,7 +969,7 @@
 #define LV_USE_GSTREAMER 0
 
 /** Decode bin images to RAM */
-#define LV_BIN_DECODER_RAM_LOAD 0
+#define LV_BIN_DECODER_RAM_LOAD 1
 
 /** RLE decompress library */
 #define LV_USE_RLE 0

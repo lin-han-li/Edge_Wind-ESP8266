@@ -20,6 +20,7 @@ extern "C" {
  * 
  * lv_font_SourceHanSerifSC_Regular_14 - 14px 思源宋体
  * lv_font_SourceHanSerifSC_Regular_16 - 16px 思源宋体
+ * lv_font_SourceHanSerifSC_Regular_20 - 20px 思源宋体
  * 
  * 包含字符: 实时波形、频谱分析、历史记录、系统设置、无线网络、
  *          采样率、上传频率、自动频谱、恢复默认、返回正常、
@@ -29,6 +30,7 @@ extern "C" {
 
 LV_FONT_DECLARE(lv_font_SourceHanSerifSC_Regular_14);
 LV_FONT_DECLARE(lv_font_SourceHanSerifSC_Regular_16);
+LV_FONT_DECLARE(lv_font_SourceHanSerifSC_Regular_20);
 
 /*******************************************************************************
  * 字体别名（方便使用）
@@ -37,12 +39,12 @@ LV_FONT_DECLARE(lv_font_SourceHanSerifSC_Regular_16);
  ******************************************************************************/
 
 /* 中文字体 */
-/* 注意: 14px字库包含完整中文字符（实时波形、频谱分析等）*/
-/* 16px字库只有少量字符（主、页、示、波、器、设、置）*/
+/* 注意: 14px/16px/20px 字库均包含完整中文字符 */
 #define EW_FONT_CN_SMALL    (&lv_font_SourceHanSerifSC_Regular_14)  /* 14px 小字/次级文本 */
-#define EW_FONT_CN_NORMAL   (&lv_font_SourceHanSerifSC_Regular_14)  /* 14px 正常/按钮标签 - 使用14px保证字符完整 */
+#define EW_FONT_CN_NORMAL   (&lv_font_SourceHanSerifSC_Regular_14)  /* 14px 正常/按钮标签 */
 #define EW_FONT_CN_TITLE    (&lv_font_SourceHanSerifSC_Regular_16)  /* 16px 标题 */
-#define EW_FONT_CN_LARGE    (&lv_font_SourceHanSerifSC_Regular_14)  /* 14px 大字 - 使用14px保证字符完整 */
+#define EW_FONT_CN_LARGE    (&lv_font_SourceHanSerifSC_Regular_14)  /* 14px 大字 */
+#define EW_FONT_CN_HOME_LABEL (&lv_font_SourceHanSerifSC_Regular_20) /* 20px 主界面底部标签 */
 
 /* 英文/数字字体（使用 Montserrat） */
 #define EW_FONT_EN_SMALL    (&lv_font_montserrat_14)                /* 14px 英文小字 */

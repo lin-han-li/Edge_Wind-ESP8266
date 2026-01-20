@@ -89,6 +89,10 @@ typedef struct {
     /* 激光扫描特效 */
     lv_obj_t *scan_overlay;
     
+    /* 进入系统按钮 */
+    lv_obj_t *enter_btn;
+    lv_obj_t *enter_btn_label;
+    
     /* Glitch 特效 */
     lv_timer_t *glitch_timer;
     uint8_t    glitch_count;

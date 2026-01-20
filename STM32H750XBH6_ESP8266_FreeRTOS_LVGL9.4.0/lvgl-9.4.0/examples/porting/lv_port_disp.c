@@ -65,12 +65,14 @@ void lv_port_disp_init(void)
     /* 设置刷新回调函数 */
     lv_display_set_flush_cb(disp, disp_flush);
 
+    /* 设置显示的颜色格式为 RGB565（必须在设置缓冲区之前） */
+    lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
+
     /*------------------------------------
-     * Buffer Configuration (Double Buffering)
+     * Buffer Configuration (FULL mode with double buffering)
      * -----------------------------------*/
-    /* * LVGL v9 配置双缓冲 (Double Buffering)
-     * 使用 DIRECT 模式，配合全屏大小的 buffer。
-     * 这样 LVGL 会直接在显存中绘制，flush_cb 负责切换显示的地址。
+    /* * 改用 FULL 模式：每次渲染整个屏幕
+     * 这对于图片渲染更可靠
      */
     
     /* 计算两个显存区的地址 */
@@ -80,8 +82,8 @@ void lv_port_disp_init(void)
     /* 设置缓冲区：Buffer大小为一整屏的字节数 */
     uint32_t buf_size = LCD_Width * LCD_Height * BytesPerPixel_0;
     
-    lv_display_set_buffers(disp, buf_1, buf_2, buf_size, LV_DISPLAY_RENDER_MODE_DIRECT);
-
+    lv_display_set_buffers(disp, buf_1, buf_2, buf_size, LV_DISPLAY_RENDER_MODE_FULL);
+    
     /* 如果你需要 LVGL 自动处理旋转或特定格式，可以在这里设置 */
     /* lv_display_set_rotation(disp, LV_DISPLAY_ROTATION_0); */
 }

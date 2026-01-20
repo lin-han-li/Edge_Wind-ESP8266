@@ -80,13 +80,12 @@ static void scanline_timer_cb(lv_timer_t *timer);
 static void log_timer_cb(lv_timer_t *timer);
 static void log_timer_start_cb(lv_anim_t *a);
 static void start_logo_phase(void);
+static void timer_resume_ready_cb(lv_anim_t *a);
 static void glitch_timer_cb(lv_timer_t *timer);
 static void progress_anim_cb(void *var, int32_t v);
 static void start_zoomout_phase(void);
 static void zoomout_start_cb(lv_anim_t *a);
-static void zoomout_scale_cb(void *var, int32_t v);
-static void zoomout_opa_cb(void *var, int32_t v);
-static void anim_finished_cb(lv_anim_t *a);
+static void enter_btn_click_cb(lv_event_t *e);
 
 /*******************************************************************************
  * 公共函数实现
@@ -433,11 +432,11 @@ static void create_crt_scanline(void)
     /* 延迟启动扫描线定时器 */
     lv_anim_t delay_start;
     lv_anim_init(&delay_start);
-    lv_anim_set_var(&delay_start, &ew_boot_anim.scanline_timer);
+    lv_anim_set_var(&delay_start, ew_boot_anim.scanline_timer);
     lv_anim_set_values(&delay_start, 0, 1);
     lv_anim_set_time(&delay_start, 1);
     lv_anim_set_delay(&delay_start, PHASE2_CORNER_DELAY + 300);
-    lv_anim_set_ready_cb(&delay_start, (lv_anim_ready_cb_t)lv_timer_resume);
+    lv_anim_set_ready_cb(&delay_start, timer_resume_ready_cb);
     lv_anim_start(&delay_start);
 }
 
@@ -506,6 +505,16 @@ static void log_timer_start_cb(lv_anim_t *a)
     lv_timer_resume(ew_boot_anim.log_timer);
 }
 
+/* 通用：动画完成后恢复定时器 */
+static void timer_resume_ready_cb(lv_anim_t *a)
+{
+    if (!a) return;
+    lv_timer_t *timer = (lv_timer_t *)a->var;
+    if (timer) {
+        lv_timer_resume(timer);
+    }
+}
+
 static void log_timer_cb(lv_timer_t *timer)
 {
     LV_UNUSED(timer);
@@ -568,14 +577,19 @@ static void create_logo_area(void)
     /* Logo 容器 */
     ew_boot_anim.logo_container = lv_obj_create(ew_boot_anim.screen);
     lv_obj_set_size(ew_boot_anim.logo_container, 300, 200);
-    lv_obj_center(ew_boot_anim.logo_container);
+    lv_obj_align(ew_boot_anim.logo_container, LV_ALIGN_CENTER, 0, -50); /* 上移50px为按钮留空间 */
+    /* 完全清除所有可见样式 */
     lv_obj_set_style_bg_opa(ew_boot_anim.logo_container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(ew_boot_anim.logo_container, 0, 0);
+    lv_obj_set_style_border_opa(ew_boot_anim.logo_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_outline_width(ew_boot_anim.logo_container, 0, 0);
+    lv_obj_set_style_shadow_width(ew_boot_anim.logo_container, 0, 0);
     lv_obj_clear_flag(ew_boot_anim.logo_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_opa(ew_boot_anim.logo_container, LV_OPA_TRANSP, 0);
     lv_obj_set_flex_flow(ew_boot_anim.logo_container, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(ew_boot_anim.logo_container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(ew_boot_anim.logo_container, 8, 0);
+    lv_obj_set_style_pad_all(ew_boot_anim.logo_container, 0, 0);
     
     /* 设置缩放中心点 */
     lv_obj_set_style_transform_pivot_x(ew_boot_anim.logo_container, lv_pct(50), 0);
@@ -585,8 +599,13 @@ static void create_logo_area(void)
     /* 创建旋转容器用于动画 */
     ew_boot_anim.icon_rotate_container = lv_obj_create(ew_boot_anim.logo_container);
     lv_obj_set_size(ew_boot_anim.icon_rotate_container, 150, 110); /* 放大: 100x80 -> 150x110 */
+    /* 完全清除所有可见样式 - 修复边框显示问题 */
     lv_obj_set_style_bg_opa(ew_boot_anim.icon_rotate_container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(ew_boot_anim.icon_rotate_container, 0, 0);
+    lv_obj_set_style_border_opa(ew_boot_anim.icon_rotate_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_outline_width(ew_boot_anim.icon_rotate_container, 0, 0);
+    lv_obj_set_style_shadow_width(ew_boot_anim.icon_rotate_container, 0, 0);
+    lv_obj_set_style_pad_all(ew_boot_anim.icon_rotate_container, 0, 0);
     lv_obj_clear_flag(ew_boot_anim.icon_rotate_container, LV_OBJ_FLAG_SCROLLABLE);
     /* 设置旋转中心点为容器中心 */
     lv_obj_set_style_transform_pivot_x(ew_boot_anim.icon_rotate_container, lv_pct(50), 0);
@@ -636,8 +655,12 @@ static void create_logo_area(void)
     /* EDGEWIND 主标题容器 - 用于叠加Glitch层 */
     lv_obj_t *text_container = lv_obj_create(ew_boot_anim.logo_container);
     lv_obj_set_size(text_container, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    /* 完全清除所有可见样式 - 文字容器 */
     lv_obj_set_style_bg_opa(text_container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(text_container, 0, 0);
+    lv_obj_set_style_border_opa(text_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_outline_width(text_container, 0, 0);
+    lv_obj_set_style_shadow_width(text_container, 0, 0);
     lv_obj_set_style_pad_all(text_container, 0, 0);
     lv_obj_clear_flag(text_container, LV_OBJ_FLAG_SCROLLABLE);
     
@@ -685,9 +708,10 @@ static void create_logo_area(void)
     lv_obj_set_style_shadow_color(ew_boot_anim.logo_sub, BOOT_COLOR_BLUE, 0);
     lv_obj_set_style_shadow_opa(ew_boot_anim.logo_sub, LV_OPA_60, 0);
     
-    /* 进度条 */
-    ew_boot_anim.progress_bar = lv_bar_create(ew_boot_anim.logo_container);
+    /* 进度条 - 独立于logo_container，直接挂在screen上 */
+    ew_boot_anim.progress_bar = lv_bar_create(ew_boot_anim.screen);
     lv_obj_set_size(ew_boot_anim.progress_bar, 200, 4);
+    lv_obj_align(ew_boot_anim.progress_bar, LV_ALIGN_CENTER, 0, 50); /* Logo下方50px */
     lv_bar_set_range(ew_boot_anim.progress_bar, 0, 100);
     lv_bar_set_value(ew_boot_anim.progress_bar, 0, LV_ANIM_OFF);
     lv_obj_set_style_bg_color(ew_boot_anim.progress_bar, lv_color_hex(0x222222), LV_PART_MAIN);
@@ -700,6 +724,37 @@ static void create_logo_area(void)
     lv_obj_set_style_shadow_color(ew_boot_anim.progress_bar, BOOT_COLOR_BLUE, LV_PART_INDICATOR);
     /* 初始隐藏进度条，等 Glitch 结束后再显示 */
     lv_obj_set_style_opa(ew_boot_anim.progress_bar, LV_OPA_TRANSP, 0);
+    /* 确保进度条在最顶层显示 */
+    lv_obj_move_foreground(ew_boot_anim.progress_bar);
+    
+    /* 进入系统按钮 - 初始隐藏 */
+    ew_boot_anim.enter_btn = lv_btn_create(ew_boot_anim.screen);
+    lv_obj_set_size(ew_boot_anim.enter_btn, 180, 50);
+    lv_obj_align(ew_boot_anim.enter_btn, LV_ALIGN_BOTTOM_MID, 0, -60);
+    /* 科技风格样式 */
+    lv_obj_set_style_bg_color(ew_boot_anim.enter_btn, lv_color_hex(0x1E1E24), 0);
+    lv_obj_set_style_bg_opa(ew_boot_anim.enter_btn, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(ew_boot_anim.enter_btn, 2, 0);
+    lv_obj_set_style_border_color(ew_boot_anim.enter_btn, BOOT_COLOR_BLUE, 0);
+    lv_obj_set_style_radius(ew_boot_anim.enter_btn, 8, 0);
+    lv_obj_set_style_shadow_width(ew_boot_anim.enter_btn, 20, 0);
+    lv_obj_set_style_shadow_color(ew_boot_anim.enter_btn, BOOT_COLOR_BLUE, 0);
+    lv_obj_set_style_shadow_opa(ew_boot_anim.enter_btn, LV_OPA_60, 0);
+    /* 按下效果 */
+    lv_obj_set_style_bg_color(ew_boot_anim.enter_btn, BOOT_COLOR_BLUE, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(ew_boot_anim.enter_btn, LV_OPA_30, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_scale(ew_boot_anim.enter_btn, 240, LV_STATE_PRESSED); /* 95% */
+    /* 按钮文字 */
+    ew_boot_anim.enter_btn_label = lv_label_create(ew_boot_anim.enter_btn);
+    lv_label_set_text(ew_boot_anim.enter_btn_label, "进 入 系 统");
+    lv_obj_center(ew_boot_anim.enter_btn_label);
+    /* 中文必须使用思源宋体字库，否则会显示方块 */
+    lv_obj_set_style_text_font(ew_boot_anim.enter_btn_label, EW_FONT_CN_NORMAL, 0);
+    lv_obj_set_style_text_color(ew_boot_anim.enter_btn_label, BOOT_COLOR_WHITE, 0);
+    /* 初始隐藏 */
+    lv_obj_set_style_opa(ew_boot_anim.enter_btn, LV_OPA_TRANSP, 0);
+    /* 确保按钮在最顶层显示 */
+    lv_obj_move_foreground(ew_boot_anim.enter_btn);
 }
 
 static void start_logo_phase(void)
@@ -764,11 +819,11 @@ static void start_logo_phase(void)
     /* 延迟启动 Glitch 定时器 - 对齐HTML: 激光扫描后 */
     lv_anim_t delay_glitch;
     lv_anim_init(&delay_glitch);
-    lv_anim_set_var(&delay_glitch, &ew_boot_anim.glitch_timer);
+    lv_anim_set_var(&delay_glitch, ew_boot_anim.glitch_timer);
     lv_anim_set_values(&delay_glitch, 0, 1);
     lv_anim_set_time(&delay_glitch, 1);
     lv_anim_set_delay(&delay_glitch, 800);  /* SVG路径绘制后 */
-    lv_anim_set_ready_cb(&delay_glitch, (lv_anim_ready_cb_t)lv_timer_resume);
+    lv_anim_set_ready_cb(&delay_glitch, timer_resume_ready_cb);
     lv_anim_start(&delay_glitch);
 }
 
@@ -807,20 +862,29 @@ static void glitch_timer_cb(lv_timer_t *timer)
         /* Glitch 结束，隐藏所有偏移层 */
         lv_obj_set_style_opa(ew_boot_anim.logo_text_red, LV_OPA_TRANSP, 0);
         lv_obj_set_style_opa(ew_boot_anim.logo_text_blue, LV_OPA_TRANSP, 0);
-        
-        /* 显示进度条 */
-        lv_obj_set_style_opa(ew_boot_anim.progress_bar, LV_OPA_COVER, 0);
-        
-        /* 进度条填充动画 */
-        lv_anim_t progress_anim;
-        lv_anim_init(&progress_anim);
-        lv_anim_set_var(&progress_anim, ew_boot_anim.progress_bar);
-        lv_anim_set_values(&progress_anim, 0, 100);
-        lv_anim_set_time(&progress_anim, PHASE5_PROGRESS_DURATION);
-        lv_anim_set_path_cb(&progress_anim, lv_anim_path_ease_in_out);
-        lv_anim_set_exec_cb(&progress_anim, progress_anim_cb);
-        lv_anim_set_ready_cb(&progress_anim, zoomout_start_cb);
-        lv_anim_start(&progress_anim);
+
+        /* 防止重复触发：删除定时器并仅启动一次进度条 */
+        if (ew_boot_anim.glitch_timer) {
+            lv_timer_del(ew_boot_anim.glitch_timer);
+            ew_boot_anim.glitch_timer = NULL;
+        }
+        if (ew_boot_anim.phase < 5) {
+            ew_boot_anim.phase = 5;
+
+            /* 显示进度条 */
+            lv_obj_set_style_opa(ew_boot_anim.progress_bar, LV_OPA_COVER, 0);
+
+            /* 进度条填充动画 */
+            lv_anim_t progress_anim;
+            lv_anim_init(&progress_anim);
+            lv_anim_set_var(&progress_anim, ew_boot_anim.progress_bar);
+            lv_anim_set_values(&progress_anim, 0, 100);
+            lv_anim_set_time(&progress_anim, PHASE5_PROGRESS_DURATION);
+            lv_anim_set_path_cb(&progress_anim, lv_anim_path_ease_in_out);
+            lv_anim_set_exec_cb(&progress_anim, progress_anim_cb);
+            lv_anim_set_ready_cb(&progress_anim, zoomout_start_cb);
+            lv_anim_start(&progress_anim);
+        }
     }
 }
 
@@ -840,105 +904,42 @@ static void zoomout_start_cb(lv_anim_t *a)
     start_zoomout_phase();
 }
 
-static void start_zoomout_phase(void)
+/* 按钮点击事件回调 */
+static void enter_btn_click_cb(lv_event_t *e)
 {
-    /* 0. 闪白效果（模拟 brightness(2)） */
-    /* 将所有元素颜色调亮 - 持续100ms */
-    lv_obj_set_style_text_color(ew_boot_anim.logo_text, lv_color_white(), 0);
-    lv_obj_set_style_text_color(ew_boot_anim.logo_sub, lv_color_white(), 0);
-    lv_obj_set_style_line_color(ew_boot_anim.logo_icon_line1, lv_color_white(), 0);
-    lv_obj_set_style_line_color(ew_boot_anim.logo_icon_line2, lv_color_white(), 0);
-    lv_obj_set_style_line_color(ew_boot_anim.logo_icon_line3, lv_color_white(), 0);
-    lv_obj_set_style_bg_color(ew_boot_anim.progress_bar, lv_color_white(), LV_PART_INDICATOR);
+    /* 防止重复触发：立即禁用按钮 */
+    lv_obj_t *btn = lv_event_get_target(e);
+    lv_obj_add_state(btn, LV_STATE_DISABLED);
+    lv_obj_remove_event_cb(btn, enter_btn_click_cb); /* 移除事件回调 */
     
-    /* 100ms后恢复原色并开始缩放 */
-    lv_anim_t flash_delay;
-    lv_anim_init(&flash_delay);
-    lv_anim_set_var(&flash_delay, ew_boot_anim.logo_container);
-    lv_anim_set_values(&flash_delay, 0, 1); /* 空动画，仅用于延迟 */
-    lv_anim_set_time(&flash_delay, 100);
-    lv_anim_set_exec_cb(&flash_delay, NULL);
-    lv_anim_start(&flash_delay);
-    
-    /* 缩放动画：256 -> 384 (100% -> 150%) - 延迟100ms开始 */
-    lv_anim_t scale_anim;
-    lv_anim_init(&scale_anim);
-    lv_anim_set_var(&scale_anim, ew_boot_anim.logo_container);
-    lv_anim_set_values(&scale_anim, 256, 384);
-    lv_anim_set_time(&scale_anim, PHASE6_ZOOMOUT_DURATION);
-    lv_anim_set_delay(&scale_anim, 100);
-    lv_anim_set_path_cb(&scale_anim, lv_anim_path_ease_in);
-    lv_anim_set_exec_cb(&scale_anim, zoomout_scale_cb);
-    lv_anim_start(&scale_anim);
-    
-    /* 透明度动画：255 -> 0 - 延迟100ms开始 */
-    lv_anim_t opa_anim;
-    lv_anim_init(&opa_anim);
-    lv_anim_set_var(&opa_anim, ew_boot_anim.logo_container);
-    lv_anim_set_values(&opa_anim, 255, 0);
-    lv_anim_set_time(&opa_anim, PHASE6_ZOOMOUT_DURATION);
-    lv_anim_set_delay(&opa_anim, 100);
-    lv_anim_set_path_cb(&opa_anim, lv_anim_path_ease_in);
-    lv_anim_set_exec_cb(&opa_anim, zoomout_opa_cb);
-    lv_anim_set_ready_cb(&opa_anim, anim_finished_cb);
-    lv_anim_start(&opa_anim);
-    
-    /* 同时淡出四角 */
-    lv_obj_t *corners[] = {
-        ew_boot_anim.corner_tl, ew_boot_anim.corner_tr,
-        ew_boot_anim.corner_bl, ew_boot_anim.corner_br
-    };
-    for (int i = 0; i < 4; i++) {
-        lv_anim_t fade;
-        lv_anim_init(&fade);
-        lv_anim_set_var(&fade, corners[i]);
-        lv_anim_set_values(&fade, 255, 0);
-        lv_anim_set_time(&fade, PHASE6_ZOOMOUT_DURATION);
-        lv_anim_set_delay(&fade, 100);
-        lv_anim_set_path_cb(&fade, lv_anim_path_ease_in);
-        lv_anim_set_exec_cb(&fade, corner_opa_anim_cb);
-        lv_anim_start(&fade);
-    }
-    
-    /* 淡出所有网格线 - 32条 */
-    for (int i = 0; i < 20; i++) {
-        lv_anim_t fade;
-        lv_anim_init(&fade);
-        lv_anim_set_var(&fade, ew_boot_anim.grid_lines_h[i]);
-        lv_anim_set_values(&fade, 255, 0);
-        lv_anim_set_time(&fade, PHASE6_ZOOMOUT_DURATION);
-        lv_anim_set_delay(&fade, 100);
-        lv_anim_set_path_cb(&fade, lv_anim_path_ease_in);
-        lv_anim_set_exec_cb(&fade, corner_opa_anim_cb);
-        lv_anim_start(&fade);
-    }
-    
-    for (int i = 0; i < 12; i++) {
-        lv_anim_t fade;
-        lv_anim_init(&fade);
-        lv_anim_set_var(&fade, ew_boot_anim.grid_lines_v[i]);
-        lv_anim_set_values(&fade, 255, 0);
-        lv_anim_set_time(&fade, PHASE6_ZOOMOUT_DURATION);
-        lv_anim_set_delay(&fade, 100);
-        lv_anim_set_path_cb(&fade, lv_anim_path_ease_in);
-        lv_anim_set_exec_cb(&fade, corner_opa_anim_cb);
-        lv_anim_start(&fade);
-    }
-}
-
-static void zoomout_scale_cb(void *var, int32_t v)
-{
-    lv_obj_set_style_transform_scale_x((lv_obj_t *)var, v, 0);
-    lv_obj_set_style_transform_scale_y((lv_obj_t *)var, v, 0);
-}
-
-static void zoomout_opa_cb(void *var, int32_t v)
-{
-    lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, 0);
-}
-
-static void anim_finished_cb(lv_anim_t *a)
-{
-    LV_UNUSED(a);
     ew_boot_anim.finished = true;
 }
+
+static void start_zoomout_phase(void)
+{
+    /* 不再执行淡出动画，改为显示"进入系统"按钮 */
+    
+    /* 隐藏进度条 */
+    lv_anim_t hide_progress;
+    lv_anim_init(&hide_progress);
+    lv_anim_set_var(&hide_progress, ew_boot_anim.progress_bar);
+    lv_anim_set_values(&hide_progress, 255, 0);
+    lv_anim_set_time(&hide_progress, 300);
+    lv_anim_set_exec_cb(&hide_progress, corner_opa_anim_cb);
+    lv_anim_start(&hide_progress);
+    
+    /* 显示进入系统按钮 - 淡入动画 */
+    lv_anim_t show_btn;
+    lv_anim_init(&show_btn);
+    lv_anim_set_var(&show_btn, ew_boot_anim.enter_btn);
+    lv_anim_set_values(&show_btn, 0, 255);
+    lv_anim_set_time(&show_btn, 500);
+    lv_anim_set_delay(&show_btn, 200);
+    lv_anim_set_path_cb(&show_btn, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&show_btn, corner_opa_anim_cb);
+    lv_anim_start(&show_btn);
+    
+    /* 绑定按钮点击事件 */
+    lv_obj_add_event_cb(ew_boot_anim.enter_btn, enter_btn_click_cb, LV_EVENT_CLICKED, NULL);
+}
+

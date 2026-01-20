@@ -1,4 +1,37 @@
-# Python
+# -------------------------------------------------------------------
+# OS / IDE / temp / backup
+# -------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
+*.backup
+backup/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+gunicorn.log
+gunicorn.pid
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+# edgewind.env：你说这是私人仓库、无需顾虑敏感信息，并希望 clone 后可直接运行
+# 所以这里不再忽略 edgewind.env（会提交到仓库）
+
+# -------------------------------------------------------------------
+# Python / Virtualenv / Tools
+# -------------------------------------------------------------------
 __pycache__/
 *.py[cod]
 *$py.class
@@ -41,27 +74,10 @@ EdgeWind_Client/instance/
 *.db-shm
 *.db-wal
 
-# Environment Variables
-.env
-.env.local
-.env.*.local
-# edgewind.env：你说这是私人仓库、无需顾虑敏感信息，并希望 clone 后可直接运行
-# 所以这里不再忽略 edgewind.env（会提交到仓库）
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Project Specific
+instance/*.db
+instance/*.db-shm
+instance/*.db-wal
 
 # Testing
 .pytest_cache/
@@ -97,9 +113,6 @@ celerybeat.pid
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
-
 # mypy
 .mypy_cache/
 .dmypy.json
@@ -108,18 +121,10 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# Project Specific
-instance/*.db
-instance/*.db-shm
-instance/*.db-wal
-logs/*.log
-*.pyc
-
-# Temporary files
-*.tmp
-*.bak
-*.swp
-*~
+# Certificates
+*.pem
+*.key
+*.crt
 
 # -------------------------------------------------------------------
 # STM32 / Keil MDK / CubeMX / Embedded build outputs
@@ -138,7 +143,6 @@ logs/*.log
 **/MDK-ARM/**/.dep/
 **/MDK-ARM/**/RTE/
 **/MDK-ARM/**/DebugConfig/
-
 **/MDK-ARM/**/*.d
 **/MDK-ARM/**/*.o
 **/MDK-ARM/**/*.obj
@@ -187,25 +191,14 @@ JLinkSettings.ini
 !**/HARDWORK/W25Q256/
 !**/HARDWORK/W25Q256/**
 
+# EdgeWind UI 字体源文件（OTF/TTF 体积大，保留生成的 .c 即可）
+**/EdgeWind_UI/fonts/**/*.otf
+**/EdgeWind_UI/fonts/**/*.ttf
+**/EdgeWind_UI/fonts/CN/
+**/EdgeWind_UI/fonts/CN/**
+
 # Gemini 临时打包目录（如存在）
 Gemini_Edge_Wind_code/
-
-# OS
-Thumbs.db
-.DS_Store
-
-# Gunicorn
-gunicorn.log
-gunicorn.pid
-
-# Certificates
-*.pem
-*.key
-*.crt
-
-# Backup files
-*.backup
-backup/
 
 # -------------------------------------------------------------------
 # EdgeWind Desktop (pywebview + PyInstaller + Inno Setup) outputs

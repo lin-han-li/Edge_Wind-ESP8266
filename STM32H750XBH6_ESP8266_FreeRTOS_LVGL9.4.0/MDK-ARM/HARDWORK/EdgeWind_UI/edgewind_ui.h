@@ -22,6 +22,7 @@ extern "C" {
 
 #include "edgewind_theme.h"
 #include "screens/scr_boot_anim.h"
+#include "screens/scr_home.h"
 
 /*******************************************************************************
  * 函数声明

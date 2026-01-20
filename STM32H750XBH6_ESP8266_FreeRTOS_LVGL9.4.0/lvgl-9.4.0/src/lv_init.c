@@ -30,6 +30,7 @@
 #include "others/sysmon/lv_sysmon_private.h"
 #include "others/translation/lv_translation.h"
 #include "others/xml/lv_xml.h"
+#include "libs/bin_decoder/lv_bin_decoder.h"
 
 #if LV_USE_SVG
     #include "libs/svg/lv_svg_decoder.h"
@@ -283,7 +284,7 @@ void lv_init(void)
 #endif
 
     lv_image_decoder_init(LV_CACHE_DEF_SIZE, LV_IMAGE_HEADER_CACHE_DEF_CNT);
-//    lv_bin_decoder_init();  /*LVGL built-in binary image decoder*/
+    lv_bin_decoder_init();  /*LVGL built-in binary image decoder*/
 
 #if LV_USE_DRAW_VG_LITE
     lv_draw_vg_lite_init();

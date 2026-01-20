@@ -3,7 +3,7 @@
  * @brief 主界面实现 - 完全参考 DONGHUA 的 setup_scr_screen_1.c 和 pw.c
  * 
  * 动画效果：
- * - 4个图标横向排列
+ * - 14个图标横向排列（轮播）
  * - 中心图标放大到 325 (约127%)
  * - 非中心图标缩放为 255 (约99.6%)
  * - 左右滑动/按钮切换，带平滑动画
@@ -27,26 +27,56 @@ ew_home_t ew_home = {0};
 
 /* 图标图片数组 */
 const lv_image_dsc_t * const home_icon_images[HOME_ICON_COUNT] = {
-    &icon_1,    /* BiliBili */
-    &icon_2,    /* Yuansheng (原神) */
-    &icon_3,    /* Wtch (手表) */
-    &icon_4,    /* QQMusic (QQ音乐) */
+    &icon_01_rtmon,     /* 实时监控 */
+    &icon_02_fault,     /* 故障监测 */
+    &icon_03_analysis,  /* 数据分析 */
+    &icon_04_history,   /* 历史记录 */
+    &icon_05_log,       /* 日志查看 */
+    &icon_06_alarm,     /* 报警设置 */
+    &icon_07_param,     /* 参数设置 */
+    &icon_08_net,       /* 网络配置 */
+    &icon_09_server,    /* 服务器配置 */
+    &icon_10_diag,      /* 系统诊断 */
+    &icon_11_device,    /* 设备管理 */
+    &icon_12_user,      /* 用户管理 */
+    &icon_13_fwup,      /* 固件升级 */
+    &icon_14_about,     /* 关于系统 */
 };
 
 /* 图标名称数组 */
 const char * const home_icon_names[HOME_ICON_COUNT] = {
-    "BiliBili",
-    "Yuansheng",
-    "Watch",
-    "QQMusic",
+    "rtmon",
+    "fault",
+    "analysis",
+    "history",
+    "log",
+    "alarm",
+    "param",
+    "net",
+    "server",
+    "diag",
+    "device",
+    "user",
+    "fwup",
+    "about",
 };
 
 /* 图标中文名称数组（用于底部当前项标签） */
 static const char * const home_icon_names_cn[HOME_ICON_COUNT] = {
-    "设备管理",
-    "网络配置",
+    "实时监控",
     "故障监测",
+    "数据分析",
+    "历史记录",
+    "日志查看",
+    "报警设置",
+    "参数设置",
+    "网络配置",
     "服务器配置",
+    "系统诊断",
+    "设备管理",
+    "用户管理",
+    "固件升级",
+    "关于系统",
 };
 
 /*******************************************************************************
@@ -56,8 +86,11 @@ static const char * const home_icon_names_cn[HOME_ICON_COUNT] = {
 static void create_carousel(void);
 static void carousel_gesture_cb(lv_event_t *e);
 static void icon_click_cb(lv_event_t *e);
+static void icon_touch_cb(lv_event_t *e);
 static void anim_timer_cb(lv_timer_t *timer);
 static void home_label_show_for_index(int idx, bool animate);
+static void open_placeholder_screen(int idx);
+static void placeholder_back_cb(lv_event_t *e);
 
 /* 单一底部标签：记录上次显示的索引，避免重复动画造成闪烁 */
 static int g_label_last_index = -1;
@@ -157,12 +190,15 @@ void ew_home_create(void)
     lv_obj_set_style_bg_opa(ew_home.screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(ew_home.screen, LV_OBJ_FLAG_SCROLLABLE);
     
-    /* 初始化状态 - 匹配 DONGHUA: current_index = IMG_COUNT/2 = 2 */
-    ew_home.current_index = HOME_ICON_COUNT / 2;
+    /* 初始化状态：默认显示第 1 个图标（实时监控） */
+    ew_home.current_index = 0;
     ew_home.animating = false;
     ew_home.anim_timer = NULL;
     ew_home.gesture_active = false;
     ew_home.gesture_start_x = 0;
+    ew_home.click_blocked = false;
+    ew_home.icon_press_start_x = 0;
+    ew_home.icon_press_start_y = 0;
     g_label_last_index = -1;
     
     /* 创建轮播容器和图标 */
@@ -274,7 +310,7 @@ static void create_carousel(void)
     lv_obj_add_flag(ew_home.carousel_card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(ew_home.carousel_card, carousel_gesture_cb, LV_EVENT_ALL, NULL);
     
-    /* 创建 4 个图标 - 匹配 DONGHUA screen_1_img_1 ~ screen_1_img_4 */
+    /* 创建图标 - 匹配 DONGHUA screen_1_img_1 ~ screen_1_img_4（此处扩展为 14 个） */
     for (int i = 0; i < HOME_ICON_COUNT; i++) {
         ew_home.icons[i] = lv_image_create(ew_home.carousel_card);
         lv_obj_add_flag(ew_home.icons[i], LV_OBJ_FLAG_CLICKABLE);
@@ -289,9 +325,14 @@ static void create_carousel(void)
         lv_obj_set_style_radius(ew_home.icons[i], 0, 0);
         lv_obj_set_style_clip_corner(ew_home.icons[i], true, 0);
         
-        /* 点击事件 */
+        /* 按压记录（用于区分点击/滑动） */
+        lv_obj_add_event_cb(ew_home.icons[i], icon_touch_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(ew_home.icons[i], icon_touch_cb, LV_EVENT_PRESSING, NULL);
+        lv_obj_add_event_cb(ew_home.icons[i], icon_touch_cb, LV_EVENT_PRESS_LOST, NULL);
+
+        /* 松手进入界面 */
         lv_obj_set_user_data(ew_home.icons[i], (void *)(intptr_t)i);
-        lv_obj_add_event_cb(ew_home.icons[i], icon_click_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(ew_home.icons[i], icon_click_cb, LV_EVENT_RELEASED, NULL);
         
         /* 事件冒泡 - 让手势能传递到父容器 */
         lv_obj_add_flag(ew_home.icons[i], LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -385,6 +426,9 @@ static void carousel_gesture_cb(lv_event_t *e)
                 /* no-op */
             }
         }
+        if (did_switch) {
+            ew_home.click_blocked = true;
+        }
         ew_home.gesture_active = false;
 
         /* 无论是否切换，只要松手就保证当前选中项的标签可见 */
@@ -407,24 +451,93 @@ static void carousel_gesture_cb(lv_event_t *e)
 }
 
 /**
+ * @brief 图标按压回调 - 记录起点用于判断滑动
+ */
+static void icon_touch_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_event_get_indev(e);
+    if (!indev) {
+        indev = lv_indev_get_act();
+    }
+
+    if (code == LV_EVENT_PRESSED) {
+        ew_home.click_blocked = false;
+        if (!indev) {
+            ew_home.icon_press_start_x = 0;
+            ew_home.icon_press_start_y = 0;
+            return;
+        }
+
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        ew_home.icon_press_start_x = p.x;
+        ew_home.icon_press_start_y = p.y;
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSING) {
+        if (!indev) return;
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        lv_coord_t dx = p.x - ew_home.icon_press_start_x;
+        lv_coord_t dy = p.y - ew_home.icon_press_start_y;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx > HOME_TAP_THRESHOLD || dy > HOME_TAP_THRESHOLD) {
+            ew_home.click_blocked = true;
+        }
+        return;
+    }
+
+    if (code == LV_EVENT_PRESS_LOST) {
+        ew_home.click_blocked = true;
+        return;
+    }
+}
+
+/**
  * @brief 图标点击事件回调
  */
 static void icon_click_cb(lv_event_t *e)
 {
+    if (lv_event_get_code(e) != LV_EVENT_RELEASED) return;
+    if (ew_home.animating) {
+        ew_home.click_blocked = false;
+        return;
+    }
+    if (ew_home.click_blocked) {
+        ew_home.click_blocked = false;
+        return;
+    }
+
+    lv_indev_t *indev = lv_event_get_indev(e);
+    if (!indev) {
+        indev = lv_indev_get_act();
+    }
+    if (indev) {
+        lv_point_t p;
+        lv_indev_get_point(indev, &p);
+        lv_coord_t dx = p.x - ew_home.icon_press_start_x;
+        lv_coord_t dy = p.y - ew_home.icon_press_start_y;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx > HOME_TAP_THRESHOLD || dy > HOME_TAP_THRESHOLD) {
+            ew_home.click_blocked = false;
+            return;
+        }
+    }
+
     lv_obj_t *obj = lv_event_get_target(e);
     int icon_index = (int)(intptr_t)lv_obj_get_user_data(obj);
+    if (icon_index != ew_home.current_index) {
+        return;
+    }
     
     LV_LOG_USER("Icon %d clicked: %s", icon_index, home_icon_names[icon_index]);
     
-    /* TODO: 在这里添加界面跳转逻辑 */
-    /* 例如：
-     * switch(icon_index) {
-     *     case 0: load_bilibili_screen(); break;
-     *     case 1: load_yuansheng_screen(); break;
-     *     case 2: load_watch_screen(); break;
-     *     case 3: load_qqmusic_screen(); break;
-     * }
-     */
+    /* 先接入“占位界面”，后续各业务界面接入时替换这里即可 */
+    open_placeholder_screen(icon_index);
 }
 
 /**
@@ -441,4 +554,44 @@ static void anim_timer_cb(lv_timer_t *timer)
 
     /* 动画结束最终兜底：确保当前标签可见（必须上划淡入；show_for_index 内部去重） */
     home_label_show_for_index(ew_home.current_index, true);
+}
+
+/**
+ * @brief 打开占位界面（用于未来 14 个功能界面接入前的跳转验证）
+ */
+static void open_placeholder_screen(int idx)
+{
+    if(idx < 0 || idx >= HOME_ICON_COUNT) return;
+
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_set_size(scr, EW_SCREEN_WIDTH, EW_SCREEN_HEIGHT);
+    lv_obj_set_style_bg_color(scr, HOME_COLOR_BG, 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* 标题 */
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, home_icon_names_cn[idx]);
+    lv_obj_set_style_text_color(title, HOME_COLOR_LABEL, 0);
+    lv_obj_set_style_text_font(title, EW_FONT_CN_HOME_LABEL, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+    /* 返回按钮（不删除主界面，返回时再 auto_del 删除占位界面） */
+    lv_obj_t *btn = lv_btn_create(scr);
+    lv_obj_set_size(btn, 120, 44);
+    lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 20, 20);
+    lv_obj_add_event_cb(btn, placeholder_back_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *btn_lab = lv_label_create(btn);
+    lv_label_set_text(btn_lab, LV_SYMBOL_LEFT " 返回");
+    lv_obj_set_style_text_font(btn_lab, EW_FONT_CN_HOME_LABEL, 0);
+    lv_obj_center(btn_lab);
+
+    lv_scr_load_anim(scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
+}
+
+static void placeholder_back_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    lv_scr_load_anim(ew_home.screen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 300, 0, true);
 }

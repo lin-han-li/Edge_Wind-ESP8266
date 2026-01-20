@@ -21,10 +21,7 @@ static bool home_loaded = false;
 static bool image_test_mode = false;
 
 /* 导入图标图片（用于桌面/调试自检） */
-LV_IMG_DECLARE(icon_1);
-LV_IMG_DECLARE(icon_2);
-LV_IMG_DECLARE(icon_3);
-LV_IMG_DECLARE(icon_4);
+LV_IMG_DECLARE(icon_01_rtmon);
 
 static bool ew_image_decoder_ok(void)
 {
@@ -50,7 +47,7 @@ static void ew_show_image_test_screen(void)
      * 简单测试模式：
      * - 用 LV_SYMBOL 测试字体图标
      * - 用 Canvas 手动绘制像素
-     * - 用外部 icon_1 测试图片渲染
+     * - 用外部 icon_01_rtmon 测试图片渲染
      * - 顶部显示 decoder 自检结果
      *========================================================================*/
 
@@ -61,7 +58,7 @@ static void ew_show_image_test_screen(void)
 
     /* ========== 关键自检：image decoder 是否工作 ========== */
     lv_image_header_t icon_h;
-    lv_result_t icon_res = lv_image_decoder_get_info(&icon_1, &icon_h);
+    lv_result_t icon_res = lv_image_decoder_get_info(&icon_01_rtmon, &icon_h);
     char dec_buf[160];
     if(icon_res == LV_RESULT_OK) {
         lv_snprintf(dec_buf, sizeof(dec_buf),
@@ -70,7 +67,7 @@ static void ew_show_image_test_screen(void)
     }
     else {
         lv_snprintf(dec_buf, sizeof(dec_buf),
-                    "Decoder FAIL: get_info(icon_1)=%d",
+                    "Decoder FAIL: get_info(icon_01_rtmon)=%d",
                     (int)icon_res);
     }
     lv_obj_t *dec_label = lv_label_create(scr);
@@ -145,9 +142,9 @@ static void ew_show_image_test_screen(void)
         lv_obj_set_pos(err, 20, 220);
     }
 
-    /* ========== 测试4：外部图标（只测试 icon_1）========== */
+    /* ========== 测试4：外部图标（只测试 icon_01_rtmon）========== */
     lv_obj_t *title4 = lv_label_create(scr);
-    lv_label_set_text(title4, "TEST4: External icon_1");
+    lv_label_set_text(title4, "TEST4: External icon_01_rtmon");
     lv_obj_set_style_text_color(title4, lv_color_hex(0x00FF00), 0);
     lv_obj_set_style_text_font(title4, &lv_font_montserrat_16, 0);
     lv_obj_align(title4, LV_ALIGN_TOP_RIGHT, -20, 10);
@@ -163,7 +160,7 @@ static void ew_show_image_test_screen(void)
     lv_obj_align(bg1, LV_ALIGN_TOP_RIGHT, -20, 40);
 
     lv_obj_t *img1 = lv_image_create(scr);
-    lv_image_set_src(img1, &icon_1);
+    lv_image_set_src(img1, &icon_01_rtmon);
     lv_obj_align(img1, LV_ALIGN_TOP_RIGHT, -25, 45);
 
     lv_obj_t *hint = lv_label_create(scr);

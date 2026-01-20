@@ -5267,24 +5267,74 @@
               <FilePath>.\HARDWORK\EdgeWind_UI\fonts\lv_font_SourceHanSerifSC_Regular_20.c</FilePath>
             </File>
             <File>
-              <FileName>icon_1.c</FileName>
+              <FileName>icon_01_rtmon.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_1.c</FilePath>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_01_rtmon.c</FilePath>
             </File>
             <File>
-              <FileName>icon_2.c</FileName>
+              <FileName>icon_02_fault.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_2.c</FilePath>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_02_fault.c</FilePath>
             </File>
             <File>
-              <FileName>icon_3.c</FileName>
+              <FileName>icon_03_analysis.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_3.c</FilePath>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_03_analysis.c</FilePath>
             </File>
             <File>
-              <FileName>icon_4.c</FileName>
+              <FileName>icon_04_history.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_4.c</FilePath>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_04_history.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_05_log.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_05_log.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_06_alarm.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_06_alarm.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_07_param.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_07_param.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_08_net.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_08_net.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_09_server.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_09_server.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_10_diag.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_10_diag.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_11_device.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_11_device.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_12_user.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_12_user.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_13_fwup.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_13_fwup.c</FilePath>
+            </File>
+            <File>
+              <FileName>icon_14_about.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\EdgeWind_UI\images\icon_14_about.c</FilePath>
             </File>
           </Files>
         </Group>

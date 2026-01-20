@@ -3,15 +3,20 @@
  * @brief 主界面图标声明
  * 
  * 图标映射：
- *   icon_1 - BiliBili
- *   icon_2 - 原神 (Yuansheng)
- *   icon_3 - 手表 (Wtch)
- *   icon_4 - QQ音乐 (QQMusic)
- * 
- * 替换图标方法：
- *   1. 使用 LVGL Image Converter 生成新的 .c 文件
- *   2. 将变量名改为 icon_1 / icon_2 / icon_3 / icon_4
- *   3. 替换对应的 icon_X.c 文件
+ *   01 实时监控 (rtmon)
+ *   02 故障监测 (fault)
+ *   03 数据分析 (analysis)
+ *   04 历史记录 (history)
+ *   05 日志查看 (log)
+ *   06 报警设置 (alarm)
+ *   07 参数设置 (param)
+ *   08 网络配置 (net)
+ *   09 服务器配置 (server)
+ *   10 系统诊断 (diag)
+ *   11 设备管理 (device)
+ *   12 用户管理 (user)
+ *   13 固件升级 (fwup)
+ *   14 关于系统 (about)
  */
 
 #ifndef HOME_ICONS_H
@@ -27,16 +32,26 @@ extern "C" {
  * 图标声明
  ******************************************************************************/
 
-LV_IMG_DECLARE(icon_1);  /* BiliBili */
-LV_IMG_DECLARE(icon_2);  /* Yuansheng (原神) */
-LV_IMG_DECLARE(icon_3);  /* Wtch (手表) */
-LV_IMG_DECLARE(icon_4);  /* QQMusic (QQ音乐) */
+LV_IMG_DECLARE(icon_01_rtmon);
+LV_IMG_DECLARE(icon_02_fault);
+LV_IMG_DECLARE(icon_03_analysis);
+LV_IMG_DECLARE(icon_04_history);
+LV_IMG_DECLARE(icon_05_log);
+LV_IMG_DECLARE(icon_06_alarm);
+LV_IMG_DECLARE(icon_07_param);
+LV_IMG_DECLARE(icon_08_net);
+LV_IMG_DECLARE(icon_09_server);
+LV_IMG_DECLARE(icon_10_diag);
+LV_IMG_DECLARE(icon_11_device);
+LV_IMG_DECLARE(icon_12_user);
+LV_IMG_DECLARE(icon_13_fwup);
+LV_IMG_DECLARE(icon_14_about);
 
 /*******************************************************************************
  * 图标数组（供轮播索引使用）
  ******************************************************************************/
 
-#define HOME_ICON_IMG_COUNT  4
+#define HOME_ICON_IMG_COUNT  14
 
 /* 图标图片数组 */
 extern const lv_image_dsc_t * const home_icon_images[HOME_ICON_IMG_COUNT];

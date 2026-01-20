@@ -14,6 +14,8 @@
 报警设置
 关于系统
 进入系统
+故障监测
+服务器配置
 
 实时波形
 频谱分析
@@ -36,8 +38,7 @@
 通道
 增益
 
-故障监测
-服务器配置
+
  --range 0x20-0x7F --lv-font-name lv_font_SourceHanSerifSC_Regular_20 -o C:\Users\pengjianzhong\Desktop\Edge_Wind_System+ESP8266\STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0\MDK-ARM\HARDWORK\EdgeWind_UI\fonts\lv_font_SourceHanSerifSC_Regular_20.c
  ******************************************************************************/
 

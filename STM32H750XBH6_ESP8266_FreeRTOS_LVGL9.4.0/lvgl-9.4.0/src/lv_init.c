@@ -31,6 +31,7 @@
 #include "others/translation/lv_translation.h"
 #include "others/xml/lv_xml.h"
 #include "libs/bin_decoder/lv_bin_decoder.h"
+#include "libs/fsdrv/lv_fsdrv.h"
 
 #if LV_USE_SVG
     #include "libs/svg/lv_svg_decoder.h"

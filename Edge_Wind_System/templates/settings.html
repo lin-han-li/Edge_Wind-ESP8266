@@ -116,6 +116,13 @@
                         </button>
                         <small class="text-muted d-block mt-1">根据上方设置的保留时长，清理历史数据</small>
                     </div>
+
+                    <div class="mb-3">
+                        <button class="btn btn-outline-secondary btn-sm w-100 rounded-pill" onclick="vacuumDatabase()">
+                            <i class="bi bi-database-gear me-1"></i>回收数据库空间（VACUUM）
+                        </button>
+                        <small class="text-muted d-block mt-1">删除数据后数据库文件不会自动变小，需执行 VACUUM 回收空间（建议暂停设备上报时执行）</small>
+                    </div>
                     
                     <hr class="text-muted opacity-25">
                     
@@ -626,7 +633,7 @@
             btn.disabled = true;
             
             const csrfToken = getCsrfToken();
-            const response = await fetch('/api/admin/reset_data', { 
+            const response = await fetch('/api/admin/clear_all_data', { 
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -658,6 +665,54 @@
                 btn.innerHTML = originalText;
                 btn.disabled = false;
             }
+        }
+    }
+
+    // 回收数据库空间（SQLite VACUUM）
+    async function vacuumDatabase() {
+        if (!confirm('⚠️ VACUUM 提示\\n\\n该操作会重写数据库文件来回收空间，执行期间会加锁，可能短暂阻塞写入。\\n\\n建议在暂停设备/模拟器上报时执行。\\n\\n是否继续？')) {
+            return;
+        }
+
+        const btn = event.currentTarget;
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="bi bi-arrow-repeat me-1 spin"></i>回收中...';
+        btn.disabled = true;
+
+        try {
+            const csrfToken = getCsrfToken();
+            const response = await fetch('/api/admin/vacuum_db', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({})
+            });
+            const res = await response.json();
+            if (!res.success) {
+                throw new Error(res.error || 'VACUUM 失败');
+            }
+
+            const d = res.data || {};
+            const mb = (n) => (typeof n === 'number' ? (n / (1024 * 1024)).toFixed(2) : '--');
+            alert(
+                `✅ VACUUM 完成\\n\\n` +
+                `数据库: ${d.db_path || ''}\\n` +
+                `回收前: ${mb(d.size_before_bytes)} MB\\n` +
+                `回收后: ${mb(d.size_after_bytes)} MB\\n` +
+                `节省: ${mb(d.saved_bytes)} MB\\n` +
+                `耗时: ${d.elapsed_ms || 0} ms\\n`
+            );
+
+            // 立即刷新系统信息（更新“数据库大小”）
+            try { await loadSystemInfo(); } catch (e) {}
+        } catch (e) {
+            console.error('[vacuumDatabase] 错误:', e);
+            alert('❌ VACUUM 失败: ' + (e?.message || e));
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
         }
     }
 </script>

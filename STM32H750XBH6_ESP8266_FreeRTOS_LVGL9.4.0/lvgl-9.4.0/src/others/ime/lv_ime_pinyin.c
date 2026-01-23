@@ -37,6 +37,12 @@ static void pinyin_input_proc(lv_obj_t * obj);
 static void pinyin_page_proc(lv_obj_t * obj, uint16_t btn);
 static char * pinyin_search_matching(lv_obj_t * obj, char * py_str, uint16_t * cand_num);
 static void pinyin_ime_clear_data(lv_obj_t * obj);
+static bool pinyin_locate_input(lv_ime_pinyin_t * pinyin_ime, lv_obj_t * ta, uint32_t * start_out,
+                                uint32_t * len_out);
+static uint8_t pinyin_normalize_input(char * out, uint8_t out_len, const char * in);
+static const lv_pinyin_dict_t * pinyin_find_match_range(const lv_pinyin_dict_t * dict, uint16_t count, const char * py,
+                                                        uint8_t len);
+static const lv_pinyin_dict_t * pinyin_find_match_all(const lv_pinyin_dict_t * dict, const char * py, uint8_t len);
 
 #if LV_IME_PINYIN_USE_K9_MODE
     static void pinyin_k9_init_data(lv_obj_t * obj);
@@ -434,6 +440,7 @@ void lv_ime_pinyin_set_keyboard(lv_obj_t * obj, lv_obj_t * kb)
     pinyin_ime->kb = kb;
     lv_obj_set_parent(obj, lv_obj_get_parent(kb));
     lv_obj_set_parent(pinyin_ime->cand_panel, lv_obj_get_parent(kb));
+    lv_obj_remove_event_cb(pinyin_ime->kb, lv_ime_pinyin_kb_event);
     lv_obj_add_event_cb(pinyin_ime->kb, lv_ime_pinyin_kb_event, LV_EVENT_VALUE_CHANGED, obj);
     lv_obj_align_to(pinyin_ime->cand_panel, pinyin_ime->kb, LV_ALIGN_OUT_TOP_MID, 0, 0);
 }
@@ -443,6 +450,10 @@ void lv_ime_pinyin_set_dict(lv_obj_t * obj, lv_pinyin_dict_t * dict)
     LV_ASSERT_OBJ(obj, MY_CLASS);
 
     init_pinyin_dict(obj, dict);
+    lv_ime_pinyin_t * pinyin_ime = (lv_ime_pinyin_t *)obj;
+    if(pinyin_ime->input_char[0] != '\0') {
+        pinyin_input_proc(obj);
+    }
 }
 
 void lv_ime_pinyin_set_mode(lv_obj_t * obj, lv_ime_pinyin_mode_t mode)
@@ -531,6 +542,8 @@ static void lv_ime_pinyin_constructor(const lv_obj_class_t * class_p, lv_obj_t *
 
     pinyin_ime->mode = LV_IME_PINYIN_MODE_K26;
     pinyin_ime->py_page = 0;
+    pinyin_ime->ta_start_pos = 0;
+    pinyin_ime->ta_pos_valid = 0;
     pinyin_ime->ta_count = 0;
     pinyin_ime->cand_num = 0;
     lv_memzero(pinyin_ime->input_char, sizeof(pinyin_ime->input_char));
@@ -556,10 +569,11 @@ static void lv_ime_pinyin_constructor(const lv_obj_class_t * class_p, lv_obj_t *
     // Default style
     lv_obj_set_style_bg_opa(pinyin_ime->cand_panel, LV_OPA_0, 0);
     lv_obj_set_style_border_width(pinyin_ime->cand_panel, 0, 0);
-    lv_obj_set_style_pad_all(pinyin_ime->cand_panel, 8, 0);
+    lv_obj_set_style_pad_all(pinyin_ime->cand_panel, 4, 0);
+    lv_obj_set_style_pad_row(pinyin_ime->cand_panel, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_column(pinyin_ime->cand_panel, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_gap(pinyin_ime->cand_panel, 0, 0);
     lv_obj_set_style_radius(pinyin_ime->cand_panel, 0, 0);
-    lv_obj_set_style_pad_gap(pinyin_ime->cand_panel, 0, 0);
     lv_obj_set_style_base_dir(pinyin_ime->cand_panel, LV_BASE_DIR_LTR, 0);
 
     // LV_PART_ITEMS style
@@ -567,6 +581,10 @@ static void lv_ime_pinyin_constructor(const lv_obj_class_t * class_p, lv_obj_t *
     lv_obj_set_style_bg_color(pinyin_ime->cand_panel, lv_color_white(), LV_PART_ITEMS);
     lv_obj_set_style_bg_opa(pinyin_ime->cand_panel, LV_OPA_0, LV_PART_ITEMS);
     lv_obj_set_style_shadow_opa(pinyin_ime->cand_panel, LV_OPA_0, LV_PART_ITEMS);
+    lv_obj_set_style_pad_left(pinyin_ime->cand_panel, 2, LV_PART_ITEMS);
+    lv_obj_set_style_pad_right(pinyin_ime->cand_panel, 2, LV_PART_ITEMS);
+    lv_obj_set_style_pad_top(pinyin_ime->cand_panel, 0, LV_PART_ITEMS);
+    lv_obj_set_style_pad_bottom(pinyin_ime->cand_panel, 0, LV_PART_ITEMS);
 
     // LV_PART_ITEMS | LV_STATE_PRESSED style
     lv_obj_set_style_bg_opa(pinyin_ime->cand_panel, LV_OPA_COVER, LV_PART_ITEMS | LV_STATE_PRESSED);
@@ -707,6 +725,24 @@ static void lv_ime_pinyin_kb_event(lv_event_t * e)
         }
         else if((pinyin_ime->mode == LV_IME_PINYIN_MODE_K26) && ((txt[0] >= 'a' && txt[0] <= 'z') || (txt[0] >= 'A' &&
                                                                                                       txt[0] <= 'Z'))) {
+            uint32_t cur_pos = 0;
+            if(ta) {
+                cur_pos = lv_textarea_get_cursor_pos(ta);
+            }
+            /* Don't try to "search" the input string in textarea.
+             * It can match old text and cause wrong deletion/selection.
+             * We rely on ta_start_pos + ta_count tracked during this typing session. */
+            if(pinyin_ime->ta_pos_valid && pinyin_ime->ta_count > 0) {
+                uint32_t expected = pinyin_ime->ta_start_pos + pinyin_ime->ta_count;
+                /* The keyboard might have already inserted the current letter, so allow +1. */
+                if(cur_pos != expected && cur_pos != (expected + 1)) {
+                    pinyin_ime_clear_data(obj);
+                }
+            }
+            if(!pinyin_ime->ta_pos_valid) {
+                pinyin_ime->ta_start_pos = (cur_pos > 0) ? (cur_pos - 1) : 0;
+                pinyin_ime->ta_pos_valid = 1;
+            }
             uint16_t len = lv_strlen(pinyin_ime->input_char);
             lv_snprintf(pinyin_ime->input_char + len, sizeof(pinyin_ime->input_char) - len, "%s", txt);
             pinyin_input_proc(obj);
@@ -735,6 +771,11 @@ static void lv_ime_pinyin_kb_event(lv_event_t * e)
             pinyin_k9_cand_page_proc(obj, 1);
         }
 #endif
+        else {
+            if(pinyin_ime->mode == LV_IME_PINYIN_MODE_K26 && pinyin_ime->ta_count > 0) {
+                pinyin_ime_clear_data(obj);
+            }
+        }
     }
 }
 
@@ -764,9 +805,35 @@ static void lv_ime_pinyin_cand_panel_event(lv_event_t * e)
         }
 
         const char * txt = lv_buttonmatrix_get_button_text(cand_panel, id);
-        uint16_t index = 0;
-        for(index = 0; index < pinyin_ime->ta_count; index++)
-            lv_textarea_delete_char(ta);
+        uint32_t start = 0;
+        uint32_t len = pinyin_ime->ta_count;
+
+        lv_textarea_clear_selection(ta);
+
+        if(len > 0) {
+            const char * ta_txt = lv_textarea_get_text(ta);
+            uint32_t text_len = ta_txt ? lv_strlen(ta_txt) : 0;
+
+            if(pinyin_ime->ta_pos_valid) {
+                start = pinyin_ime->ta_start_pos;
+            }
+            else {
+                uint32_t cur_pos = lv_textarea_get_cursor_pos(ta);
+                start = (cur_pos >= len) ? (cur_pos - len) : 0;
+            }
+
+            if(start > text_len) start = text_len;
+            if(start + len > text_len) len = text_len - start;
+
+            if(len > 0) {
+                uint32_t end = start + len;
+                lv_textarea_set_cursor_pos(ta, end);
+                for(uint32_t i = 0; i < len; i++) {
+                    lv_textarea_delete_char(ta);
+                }
+                lv_textarea_set_cursor_pos(ta, start);
+            }
+        }
 
         lv_textarea_add_text(ta, txt);
 
@@ -780,6 +847,8 @@ static void pinyin_input_proc(lv_obj_t * obj)
 
     pinyin_ime->cand_str = pinyin_search_matching(obj, pinyin_ime->input_char, &pinyin_ime->cand_num);
     if(pinyin_ime->cand_str == NULL) {
+        pinyin_ime->cand_num = 0;
+        lv_obj_add_flag(pinyin_ime->cand_panel, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 
@@ -894,36 +963,43 @@ static char * pinyin_search_matching(lv_obj_t * obj, char * py_str, uint16_t * c
     lv_ime_pinyin_t * pinyin_ime = (lv_ime_pinyin_t *)obj;
 
     const lv_pinyin_dict_t * cpHZ;
-    uint8_t index, len = 0, offset;
-    volatile uint8_t count = 0;
+    uint8_t len = 0;
+    uint8_t offset = 0;
+    volatile uint16_t count = 0;
 
-    if(*py_str == '\0')    return NULL;
-    if(*py_str == 'i')     return NULL;
-    if(*py_str == 'u')     return NULL;
-    if(*py_str == 'v')     return NULL;
-    if(*py_str == ' ')     return NULL;
+    if(cand_num) *cand_num = 0;
 
-    offset = py_str[0] - 'a';
-    len = lv_strlen(py_str);
+    if(pinyin_ime->dict == NULL || py_str == NULL) {
+        return NULL;
+    }
 
-    cpHZ  = &pinyin_ime->dict[pinyin_ime->py_pos[offset]];
-    count = pinyin_ime->py_num[offset];
+    char py_buf[sizeof(pinyin_ime->input_char)];
+    len = pinyin_normalize_input(py_buf, sizeof(py_buf), py_str);
+    if(len == 0) return NULL;
 
-    while(count--) {
-        for(index = 0; index < len; index++) {
-            if(*(py_str + index) != *((cpHZ->py) + index)) {
-                break;
+    if(py_buf[0] < 'a' || py_buf[0] > 'z') {
+        return NULL;
+    }
+
+    offset = (uint8_t)(py_buf[0] - 'a');
+    if(offset < 26) {
+        count = pinyin_ime->py_num[offset];
+        cpHZ  = &pinyin_ime->dict[pinyin_ime->py_pos[offset]];
+        if(count > 0) {
+            const lv_pinyin_dict_t * match = pinyin_find_match_range(cpHZ, count, py_buf, len);
+            if(match) {
+                * cand_num = lv_strlen((const char *)(match->py_mb)) / 3;
+                return (char *)(match->py_mb);
             }
         }
-
-        // perfect match
-        if(len == 1 || index == len) {
-            // The Chinese character in UTF-8 encoding format is 3 bytes
-            * cand_num = lv_strlen((const char *)(cpHZ->py_mb)) / 3;
-            return (char *)(cpHZ->py_mb);
-        }
-        cpHZ++;
     }
+
+    const lv_pinyin_dict_t * match = pinyin_find_match_all(pinyin_ime->dict, py_buf, len);
+    if(match) {
+        * cand_num = lv_strlen((const char *)(match->py_mb)) / 3;
+        return (char *)(match->py_mb);
+    }
+
     return NULL;
 }
 
@@ -948,6 +1024,8 @@ static void pinyin_ime_clear_data(lv_obj_t * obj)
 #endif
 
     pinyin_ime->ta_count = 0;
+    pinyin_ime->ta_start_pos = 0;
+    pinyin_ime->ta_pos_valid = 0;
     for(uint8_t i = 0; i < LV_IME_PINYIN_CAND_TEXT_NUM; i++) {
         lv_memset(lv_pinyin_cand_str[i], 0x00, sizeof(lv_pinyin_cand_str[i]));
         lv_pinyin_cand_str[i][0] = ' ';
@@ -955,6 +1033,123 @@ static void pinyin_ime_clear_data(lv_obj_t * obj)
     lv_memzero(pinyin_ime->input_char, sizeof(pinyin_ime->input_char));
 
     lv_obj_add_flag(pinyin_ime->cand_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static bool pinyin_locate_input(lv_ime_pinyin_t * pinyin_ime, lv_obj_t * ta, uint32_t * start_out,
+                                uint32_t * len_out)
+{
+    if(!pinyin_ime || !ta) return false;
+
+    uint32_t input_len = lv_strlen(pinyin_ime->input_char);
+    if(input_len == 0) return false;
+
+    const char * ta_txt = lv_textarea_get_text(ta);
+    if(ta_txt == NULL) return false;
+
+    uint32_t text_len = lv_strlen(ta_txt);
+    if(len_out) *len_out = input_len;
+
+    if(pinyin_ime->ta_pos_valid) {
+        uint32_t start = pinyin_ime->ta_start_pos;
+        if(start + input_len <= text_len &&
+           lv_strncmp(ta_txt + start, pinyin_ime->input_char, input_len) == 0) {
+            if(start_out) *start_out = start;
+            return true;
+        }
+    }
+
+    uint32_t cur_pos = lv_textarea_get_cursor_pos(ta);
+    if(cur_pos > text_len) cur_pos = text_len;
+
+    bool found = false;
+    uint32_t best_pos = 0;
+    if(text_len >= input_len) {
+        for(uint32_t i = 0; i + input_len <= text_len; i++) {
+            if(i > cur_pos) break;
+            if(lv_strncmp(ta_txt + i, pinyin_ime->input_char, input_len) == 0) {
+                best_pos = i;
+                found = true;
+            }
+        }
+    }
+
+    if(found) {
+        if(start_out) *start_out = best_pos;
+        pinyin_ime->ta_start_pos = best_pos;
+        pinyin_ime->ta_pos_valid = 1;
+        return true;
+    }
+
+    return false;
+}
+
+static uint8_t pinyin_normalize_input(char * out, uint8_t out_len, const char * in)
+{
+    if(out == NULL || out_len == 0 || in == NULL) return 0;
+
+    uint8_t n = 0;
+    for(uint8_t i = 0; in[i] != '\0'; i++) {
+        char c = in[i];
+        if(c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if(c < 'a' || c > 'z') break;
+        if(n + 1 >= out_len) break;
+        out[n++] = c;
+    }
+    out[n] = '\0';
+    return n;
+}
+
+static const lv_pinyin_dict_t * pinyin_find_match_range(const lv_pinyin_dict_t * dict, uint16_t count, const char * py,
+                                                        uint8_t len)
+{
+    if(dict == NULL || py == NULL || len == 0) return NULL;
+
+    const lv_pinyin_dict_t * prefix = NULL;
+    for(uint16_t i = 0; i < count; i++) {
+        if(dict[i].py == NULL || dict[i].py_mb == NULL) break;
+        uint8_t j = 0;
+        for(j = 0; j < len; j++) {
+            char c = dict[i].py[j];
+            if(c == '\0' || py[j] != c) {
+                break;
+            }
+        }
+        if(j == len) {
+            if(dict[i].py[j] == '\0') {
+                return &dict[i];
+            }
+            if(prefix == NULL) {
+                prefix = &dict[i];
+            }
+        }
+    }
+    return prefix;
+}
+
+static const lv_pinyin_dict_t * pinyin_find_match_all(const lv_pinyin_dict_t * dict, const char * py, uint8_t len)
+{
+    if(dict == NULL || py == NULL || len == 0) return NULL;
+
+    const lv_pinyin_dict_t * prefix = NULL;
+    for(uint32_t i = 0; ; i++) {
+        if(dict[i].py == NULL || dict[i].py_mb == NULL) break;
+        uint8_t j = 0;
+        for(j = 0; j < len; j++) {
+            char c = dict[i].py[j];
+            if(c == '\0' || py[j] != c) {
+                break;
+            }
+        }
+        if(j == len) {
+            if(dict[i].py[j] == '\0') {
+                return &dict[i];
+            }
+            if(prefix == NULL) {
+                prefix = &dict[i];
+            }
+        }
+    }
+    return prefix;
 }
 
 #if LV_IME_PINYIN_USE_K9_MODE

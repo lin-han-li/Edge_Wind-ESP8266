@@ -112,6 +112,29 @@ def _get_json_payload() -> dict:
         pass
     return {}
 
+def _normalize_node_id(raw) -> str:
+    """
+    归一化 node_id/device_id：
+    - 去首尾空白
+    - 去掉控制字符（\\r\\n\\t）
+    - 将“弯引号/智能引号”统一为标准 ASCII 引号，避免同一设备出现多种不可见变体
+    注意：这里尽量不做“强制替换为下划线”等破坏性操作，以免设备侧继续上报旧ID导致对不上。
+    """
+    if raw is None:
+        return ''
+    s = str(raw)
+    s = s.replace('\u00A0', ' ')  # NBSP -> space
+    s = s.strip()
+    # 删除控制字符（避免污染日志/数据库/URL）
+    s = re.sub(r'[\r\n\t]+', '', s)
+    # 统一弯引号/智能引号
+    s = (s
+         .replace('\u2018', "'")  # ‘
+         .replace('\u2019', "'")  # ’
+         .replace('\u201C', '"')  # “
+         .replace('\u201D', '"')) # ”
+    return s
+
 
 def _submit_update_device_heartbeat(node_id: str, payload: dict, fault_code: str, current_ts: float) -> None:
     """后台更新 Device 表：last_heartbeat/status/fault_code/location/hw_version（节流后调用）。"""
@@ -250,13 +273,15 @@ def register_device():
 
         data = _get_json_payload()
         # 兼容：部分固件可能用 node_id
-        device_id = data.get('device_id') or data.get('node_id')
+        device_id = _normalize_node_id(data.get('device_id') or data.get('node_id'))
         # 兼容：location 允许缺省（回退为 device_id），避免注册失败导致后续全链路不可用
         location = data.get('location') or device_id
         hw_version = data.get('hw_version') or data.get('hardware_version') or data.get('fw_version') or 'v1.0'
         
         if not device_id:
             return jsonify({'error': 'Missing device_id'}), 400
+        if len(device_id) > 100:
+            return jsonify({'error': 'device_id too long (max 100)'}), 400
         logger.info(f"[/api/register] device_id={device_id}, location={location}, hw_version={hw_version}")
         
         # 检查设备是否已存在
@@ -372,13 +397,15 @@ def upload_data():
             return auth_resp
 
         data = _get_json_payload()
-        device_id = data.get('device_id')
+        device_id = _normalize_node_id(data.get('device_id'))
         status = data.get('status', 'normal')
         fault_code = data.get('fault_code', 'E00')
         waveform = data.get('waveform')
 
         if not device_id:
             return jsonify({'error': 'Missing device_id'}), 400
+        if len(device_id) > 100:
+            return jsonify({'error': 'device_id too long (max 100)'}), 400
 
         # 1) 确保设备存在
         device = Device.query.filter_by(device_id=device_id).first()
@@ -511,11 +538,13 @@ def node_heartbeat():
 
         data = _get_json_payload()
         t_json = time.perf_counter()
-        node_id = data.get('node_id') or data.get('device_id')
+        node_id = _normalize_node_id(data.get('node_id') or data.get('device_id'))
         fault_code = (data.get('fault_code') or 'E00').strip() or 'E00'
         
         if not node_id:
             return jsonify({'error': 'Missing node_id'}), 400
+        if len(node_id) > 100:
+            return jsonify({'error': 'node_id too long (max 100)'}), 400
 
         # 0. Update timestamp + Debug log (rate limited per node)
         current_timestamp = time.time()
@@ -1844,6 +1873,99 @@ def admin_system_info():
         logger.error(f"[admin_system_info] 获取系统信息失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_bp.route('/admin/vacuum_db', methods=['POST'])
+@login_required
+def admin_vacuum_db():
+    """
+    执行 SQLite VACUUM 回收数据库文件空间。
+
+    重要说明：
+    - DELETE 只会释放可复用页，不会缩小 .db 文件。
+    - VACUUM 会重写数据库文件来回收空间，期间会加锁，可能短暂阻塞写入。
+    - 建议在设备/模拟器暂停上报时执行。
+    """
+    try:
+        # 仅支持 SQLite
+        db_uri = (app_instance.config.get('SQLALCHEMY_DATABASE_URI') if app_instance else '') or ''
+        sqlite_path = _get_sqlite_db_path_from_uri(db_uri)
+        if sqlite_path is None:
+            return jsonify({'success': False, 'error': '当前数据库不是 SQLite，无法执行 VACUUM'}), 400
+
+        # 绝对化路径（与 admin_system_info 保持一致）
+        if not sqlite_path.is_absolute():
+            project_root = Path(__file__).resolve().parents[1]  # edgewind/
+            project_root = project_root.parent  # 项目根
+            sqlite_path = (project_root / sqlite_path).resolve()
+
+        if not sqlite_path.exists():
+            return jsonify({'success': False, 'error': f'数据库文件不存在: {sqlite_path}'}), 404
+
+        size_before = sqlite_path.stat().st_size
+
+        # 先提交并清理 session，减少 “database is locked” 概率
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        try:
+            db.session.close()
+        except Exception:
+            pass
+
+        t0 = time.perf_counter()
+        engine = db.engine
+
+        # VACUUM 不能在事务内执行；对 sqlite3 连接设置 isolation_level=None
+        conn = engine.raw_connection()
+        try:
+            try:
+                conn.isolation_level = None
+            except Exception:
+                # 某些 DBAPI 不支持该属性（非 SQLite），但我们前面已限制为 SQLite
+                pass
+
+            cur = conn.cursor()
+            try:
+                # 若处于 WAL 模式，先 checkpoint，避免 wal 文件占用空间
+                try:
+                    cur.execute("PRAGMA journal_mode;")
+                    row = cur.fetchone()
+                    journal_mode = (row[0] if row else '') or ''
+                    if str(journal_mode).lower() == 'wal':
+                        cur.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                except Exception:
+                    pass
+
+                cur.execute("VACUUM;")
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        size_after = sqlite_path.stat().st_size
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'db_path': str(sqlite_path),
+                'size_before_bytes': int(size_before),
+                'size_after_bytes': int(size_after),
+                'saved_bytes': int(max(0, size_before - size_after)),
+                'elapsed_ms': elapsed_ms,
+            }
+        }), 200
+    except Exception as e:
+        logger.exception(f"[admin_vacuum_db] VACUUM 失败: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

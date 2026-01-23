@@ -42,6 +42,8 @@ struct _lv_ime_pinyin_t {
     uint16_t k9_legal_py_count; /* Count of legal Pinyin numbers(k9) */
     uint16_t k9_input_str_len;  /* 9-key input(k9) mode input string max len */
 #endif
+    uint32_t ta_start_pos;      /* Pinyin start position in textarea */
+    uint8_t  ta_pos_valid;      /* Start position valid flag */
     uint16_t ta_count;          /* The number of characters entered in the text box this time */
     uint16_t cand_num;          /* Number of candidates */
     uint16_t py_page;           /* Current pinyin map pages(k26) */

@@ -15,6 +15,24 @@
 /*********************
  * DEFINES
  *********************/
+#ifndef EW_TOUCH_SCROLL_LIMIT
+/* 滑动判定距离（像素）：越小越“灵敏”，越大越不易误触发滑动 */
+#define EW_TOUCH_SCROLL_LIMIT 10
+#endif
+
+#ifndef EW_TOUCH_SCROLL_THROW
+/* 滑动松手后的惯性衰减（百分比）：越大停止越快，越小惯性越强 */
+#define EW_TOUCH_SCROLL_THROW 25
+#endif
+
+#ifndef EW_TOUCH_LONG_PRESS_MS
+/* 长按判定时间（ms）：适当调小可让按键反馈更快（不影响普通点击的抬起触发） */
+#define EW_TOUCH_LONG_PRESS_MS 350
+#endif
+
+#ifndef EW_TOUCH_LONG_PRESS_REPEAT_MS
+#define EW_TOUCH_LONG_PRESS_REPEAT_MS 120
+#endif
 
 /**********************
  * TYPEDEFS
@@ -57,9 +75,11 @@ void lv_port_indev_init(void)
     lv_indev_set_read_cb(indev_touchpad, touchpad_read);
 
     /* ！！！新增代码：设置触摸防抖/滑动阈值 ！！！ */
-    /* 默认值较小，手指微颤容易被误判为滑动从而取消点击。 */
-    /* 这里设置为 20 像素，意味着手指由于抖动移动在 20px 以内都视为点击。 */
-    lv_indev_set_scroll_limit(indev_touchpad, 20);
+    /* 根据主界面“滑动不灵敏/点击迟钝”的体验，降低滑动门槛并加快惯性衰减 */
+    lv_indev_set_scroll_limit(indev_touchpad, EW_TOUCH_SCROLL_LIMIT);
+    lv_indev_set_scroll_throw(indev_touchpad, EW_TOUCH_SCROLL_THROW);
+    lv_indev_set_long_press_time(indev_touchpad, EW_TOUCH_LONG_PRESS_MS);
+    lv_indev_set_long_press_repeat_time(indev_touchpad, EW_TOUCH_LONG_PRESS_REPEAT_MS);
 }
 
 /**********************

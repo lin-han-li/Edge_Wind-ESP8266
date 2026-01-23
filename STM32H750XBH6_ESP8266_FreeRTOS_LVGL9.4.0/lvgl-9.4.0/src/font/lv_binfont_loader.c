@@ -11,7 +11,18 @@
 #include "../misc/lv_fs_private.h"
 #include "../misc/lv_types.h"
 #include "../stdlib/lv_string.h"
+#include "../stdlib/lv_mem.h"
 #include "lv_binfont_loader.h"
+
+#ifndef EW_BINFONT_MMAP_ZERO_COPY
+#define EW_BINFONT_MMAP_ZERO_COPY 1
+#endif
+
+#ifndef EW_BINFONT_MMAP_CACHE_SIZE
+#define EW_BINFONT_MMAP_CACHE_SIZE (8U * 1024U)
+#endif
+
+#define BINFONT_MMAP_MAGIC 0x4D4D4150UL /* 'MMAP' */
 
 /**********************
  *      TYPEDEFS
@@ -58,6 +69,24 @@ typedef struct cmap_table_bin {
     uint8_t format_type;
     uint8_t padding;
 } cmap_table_bin_t;
+
+#if EW_BINFONT_MMAP_ZERO_COPY
+typedef struct {
+    uint32_t magic;
+    const uint8_t * base;
+    uint32_t size;
+    uint32_t glyf_start;
+    uint32_t glyf_length;
+    uint32_t loca_count;
+    uint32_t nbits;
+    uint8_t nbits_rem;
+    uint32_t * glyph_offset;
+    uint32_t cache_gid;
+    uint8_t * cache_buf;
+    uint32_t cache_size;
+    uint32_t cache_len;
+} binfont_mmap_ctx_t;
+#endif
 
 /**********************
  *  STATIC PROTOTYPES
@@ -130,12 +159,39 @@ lv_font_t * lv_binfont_create_from_buffer(void * buffer, uint32_t size)
 }
 #endif
 
+#if EW_BINFONT_MMAP_ZERO_COPY
+lv_font_t * lv_binfont_create_mmap(const void * buffer, uint32_t size)
+{
+#if LV_USE_FS_MEMFS
+    lv_fs_path_ex_t mempath;
+    lv_fs_make_path_from_buffer(&mempath, LV_FS_MEMFS_LETTER, buffer, size, "bin");
+    return lv_binfont_create((const char *)&mempath);
+#else
+    LV_UNUSED(buffer);
+    LV_UNUSED(size);
+    return NULL;
+#endif
+}
+#endif
+
 void lv_binfont_destroy(lv_font_t * font)
 {
     if(font == NULL) return;
 
     const lv_font_fmt_txt_dsc_t * dsc = font->dsc;
     if(dsc == NULL) return;
+
+    bool is_mmap = false;
+#if EW_BINFONT_MMAP_ZERO_COPY
+    binfont_mmap_ctx_t * mmap_ctx = (binfont_mmap_ctx_t *)font->user_data;
+    if(mmap_ctx && mmap_ctx->magic == BINFONT_MMAP_MAGIC) {
+        is_mmap = true;
+        if(mmap_ctx->glyph_offset) lv_free(mmap_ctx->glyph_offset);
+        if(mmap_ctx->cache_buf) lv_free(mmap_ctx->cache_buf);
+        lv_free(mmap_ctx);
+        font->user_data = NULL;
+    }
+#endif
 
     if(dsc->kern_classes == 0) {
         const lv_font_fmt_txt_kern_pair_t * kern_dsc = dsc->kern_dsc;
@@ -164,7 +220,9 @@ void lv_binfont_destroy(lv_font_t * font)
         lv_free((void *)cmaps);
     }
 
-    lv_free((void *)dsc->glyph_bitmap);
+    if(!is_mmap) {
+        lv_free((void *)dsc->glyph_bitmap);
+    }
     lv_free((void *)dsc->glyph_dsc);
     lv_free((void *)dsc);
     lv_free(font);
@@ -204,6 +262,39 @@ static unsigned int read_bits(bit_iterator_t * it, int n_bits, lv_fs_res_t * res
     *res = LV_FS_RES_OK;
     return value;
 }
+
+#if EW_BINFONT_MMAP_ZERO_COPY
+typedef struct {
+    const uint8_t * ptr;
+    int bit_pos;
+    uint8_t byte_value;
+} bit_iterator_mem_t;
+
+static bit_iterator_mem_t init_bit_iterator_mem(const uint8_t * ptr)
+{
+    bit_iterator_mem_t it;
+    it.ptr = ptr;
+    it.bit_pos = -1;
+    it.byte_value = 0;
+    return it;
+}
+
+static unsigned int read_bits_mem(bit_iterator_mem_t * it, int n_bits)
+{
+    unsigned int value = 0;
+    while(n_bits--) {
+        if(it->bit_pos < 0) {
+            it->byte_value = *(it->ptr++);
+            it->bit_pos = 7;
+        }
+        int8_t bit = (it->byte_value & 0x80) ? 1 : 0;
+        it->byte_value <<= 1;
+        it->bit_pos--;
+        value |= (bit << n_bits);
+    }
+    return value;
+}
+#endif
 
 static int read_bits_signed(bit_iterator_t * it, int n_bits, lv_fs_res_t * res)
 {
@@ -328,7 +419,11 @@ static int32_t load_cmaps(lv_fs_file_t * fp, lv_font_fmt_txt_dsc_t * font_dsc, u
 }
 
 static int32_t load_glyph(lv_fs_file_t * fp, lv_font_fmt_txt_dsc_t * font_dsc,
-                          uint32_t start, uint32_t * glyph_offset, uint32_t loca_count, font_header_bin_t * header)
+                          uint32_t start, uint32_t * glyph_offset, uint32_t loca_count, font_header_bin_t * header
+#if EW_BINFONT_MMAP_ZERO_COPY
+                          , binfont_mmap_ctx_t * mmap_ctx
+#endif
+                          )
 {
     int32_t glyph_length = read_label(fp, start, "glyf");
     if(glyph_length < 0) {
@@ -406,6 +501,13 @@ static int32_t load_glyph(lv_fs_file_t * fp, lv_font_fmt_txt_dsc_t * font_dsc,
         }
     }
 
+#if EW_BINFONT_MMAP_ZERO_COPY
+    if(mmap_ctx) {
+        font_dsc->glyph_bitmap = NULL;
+        return glyph_length;
+    }
+#endif
+
     uint8_t * glyph_bmp = (uint8_t *)lv_malloc(sizeof(uint8_t) * cur_bmp_size);
     LV_ASSERT_MALLOC(glyph_bmp);
 
@@ -460,6 +562,96 @@ static int32_t load_glyph(lv_fs_file_t * fp, lv_font_fmt_txt_dsc_t * font_dsc,
     }
     return glyph_length;
 }
+
+#if EW_BINFONT_MMAP_ZERO_COPY
+static void binfont_mmap_ensure_cache(binfont_mmap_ctx_t * ctx, uint32_t need_size)
+{
+    if(need_size == 0) return;
+    if(ctx->cache_buf == NULL || ctx->cache_size < need_size) {
+        if(ctx->cache_buf) {
+            lv_free(ctx->cache_buf);
+        }
+        uint32_t alloc_size = (need_size > EW_BINFONT_MMAP_CACHE_SIZE) ? need_size : EW_BINFONT_MMAP_CACHE_SIZE;
+        ctx->cache_buf = (uint8_t *)lv_malloc(alloc_size);
+        ctx->cache_size = ctx->cache_buf ? alloc_size : 0;
+        ctx->cache_gid = UINT32_MAX;
+        ctx->cache_len = 0;
+    }
+}
+
+static void binfont_mmap_copy_bitmap(binfont_mmap_ctx_t * ctx, uint32_t gid, uint32_t bmp_size)
+{
+    if(!ctx || !ctx->cache_buf || bmp_size == 0) return;
+
+    const uint8_t * glyph_ptr = ctx->base + ctx->glyf_start + ctx->glyph_offset[gid];
+
+    if(ctx->nbits_rem == 0) {
+        const uint8_t * src = glyph_ptr + (ctx->nbits / 8U);
+        lv_memcpy(ctx->cache_buf, src, bmp_size);
+        return;
+    }
+
+    bit_iterator_mem_t bit_it = init_bit_iterator_mem(glyph_ptr);
+    (void)read_bits_mem(&bit_it, (int)ctx->nbits);
+
+    if(bmp_size == 1) {
+        ctx->cache_buf[0] = (uint8_t)(read_bits_mem(&bit_it, 8 - ctx->nbits_rem) << ctx->nbits_rem);
+        return;
+    }
+
+    for(uint32_t k = 0; k < bmp_size - 1; ++k) {
+        ctx->cache_buf[k] = (uint8_t)read_bits_mem(&bit_it, 8);
+    }
+
+    ctx->cache_buf[bmp_size - 1] =
+        (uint8_t)(read_bits_mem(&bit_it, 8 - ctx->nbits_rem) << ctx->nbits_rem);
+}
+
+static const void * binfont_mmap_get_glyph_bitmap(lv_font_glyph_dsc_t * g_dsc, lv_draw_buf_t * draw_buf)
+{
+    const lv_font_t * font = g_dsc->resolved_font;
+    lv_font_fmt_txt_dsc_t * fdsc = (lv_font_fmt_txt_dsc_t *)font->dsc;
+    binfont_mmap_ctx_t * ctx = (binfont_mmap_ctx_t *)font->user_data;
+
+    if(!ctx || ctx->magic != BINFONT_MMAP_MAGIC) {
+        return lv_font_get_bitmap_fmt_txt(g_dsc, draw_buf);
+    }
+
+    uint32_t gid = g_dsc->gid.index;
+    if(!gid || gid >= ctx->loca_count) return NULL;
+
+    const lv_font_fmt_txt_glyph_dsc_t * gdsc = &fdsc->glyph_dsc[gid];
+    int32_t gsize = (int32_t)gdsc->box_w * gdsc->box_h;
+    if(gsize == 0) return NULL;
+
+    uint32_t next_offset = (gid < ctx->loca_count - 1) ? ctx->glyph_offset[gid + 1] : ctx->glyf_length;
+    uint32_t bmp_size = next_offset - ctx->glyph_offset[gid] - (ctx->nbits / 8U);
+    if(bmp_size == 0) return NULL;
+
+    if(ctx->cache_gid != gid || ctx->cache_len != bmp_size) {
+        binfont_mmap_ensure_cache(ctx, bmp_size);
+        if(ctx->cache_buf == NULL) return NULL;
+        binfont_mmap_copy_bitmap(ctx, gid, bmp_size);
+        ctx->cache_gid = gid;
+        ctx->cache_len = bmp_size;
+    }
+
+    if(g_dsc->req_raw_bitmap) {
+        return ctx->cache_buf;
+    }
+
+    const uint8_t * orig_bitmap = fdsc->glyph_bitmap;
+    uint32_t orig_index = ((lv_font_fmt_txt_glyph_dsc_t *)gdsc)->bitmap_index;
+    fdsc->glyph_bitmap = ctx->cache_buf;
+    ((lv_font_fmt_txt_glyph_dsc_t *)gdsc)->bitmap_index = 0;
+
+    const void * out = lv_font_get_bitmap_fmt_txt(g_dsc, draw_buf);
+
+    ((lv_font_fmt_txt_glyph_dsc_t *)gdsc)->bitmap_index = orig_index;
+    fdsc->glyph_bitmap = orig_bitmap;
+    return out;
+}
+#endif
 
 /*
  * Loads a `lv_font_t` from a binary file, given a `lv_fs_file_t`.
@@ -554,14 +746,58 @@ static bool lvgl_load_font(lv_fs_file_t * fp, lv_font_t * font)
 
     /*glyph*/
     uint32_t glyph_start = loca_start + loca_length;
+    #if EW_BINFONT_MMAP_ZERO_COPY
+    binfont_mmap_ctx_t * mmap_ctx = NULL;
+    if(fp && fp->drv && fp->drv->cache_size == LV_FS_CACHE_FROM_BUFFER && fp->cache && fp->cache->buffer) {
+        mmap_ctx = lv_malloc_zeroed(sizeof(binfont_mmap_ctx_t));
+        if(mmap_ctx) {
+            mmap_ctx->magic = BINFONT_MMAP_MAGIC;
+            mmap_ctx->base = (const uint8_t *)fp->cache->buffer;
+            mmap_ctx->size = fp->cache->end;
+            mmap_ctx->cache_gid = UINT32_MAX;
+            mmap_ctx->cache_buf = NULL;
+            mmap_ctx->cache_size = 0;
+            mmap_ctx->cache_len = 0;
+            mmap_ctx->nbits = (uint32_t)(font_header.advance_width_bits +
+                                         2U * font_header.xy_bits +
+                                         2U * font_header.wh_bits);
+            mmap_ctx->nbits_rem = (uint8_t)(mmap_ctx->nbits % 8U);
+        }
+    }
+    #endif
+
     int32_t glyph_length = load_glyph(
-                               fp, font_dsc, glyph_start, glyph_offset, loca_count, &font_header);
-
-    lv_free(glyph_offset);
-
+                               fp, font_dsc, glyph_start, glyph_offset, loca_count, &font_header
+    #if EW_BINFONT_MMAP_ZERO_COPY
+                               , mmap_ctx
+    #endif
+                               );
     if(glyph_length < 0) {
+        #if EW_BINFONT_MMAP_ZERO_COPY
+        if(mmap_ctx) {
+            if(mmap_ctx->cache_buf) lv_free(mmap_ctx->cache_buf);
+            lv_free(mmap_ctx);
+        }
+        #endif
+        lv_free(glyph_offset);
         return false;
     }
+
+    #if EW_BINFONT_MMAP_ZERO_COPY
+    if(mmap_ctx) {
+        mmap_ctx->glyf_start = glyph_start;
+        mmap_ctx->glyf_length = (uint32_t)glyph_length;
+        mmap_ctx->loca_count = loca_count;
+        mmap_ctx->glyph_offset = glyph_offset;
+        font->user_data = mmap_ctx;
+        font->get_glyph_bitmap = binfont_mmap_get_glyph_bitmap;
+    }
+    else {
+        lv_free(glyph_offset);
+    }
+    #else
+    lv_free(glyph_offset);
+    #endif
 
     /*kerning*/
     if(font_header.tables_count < 4) {

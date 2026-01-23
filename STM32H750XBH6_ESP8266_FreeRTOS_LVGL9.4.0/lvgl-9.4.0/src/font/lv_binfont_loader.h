@@ -17,6 +17,9 @@ extern "C" {
 /*********************
  *      DEFINES
  *********************/
+#ifndef EW_BINFONT_MMAP_ZERO_COPY
+#define EW_BINFONT_MMAP_ZERO_COPY 1
+#endif
 
 /**********************
  *      TYPEDEFS
@@ -52,6 +55,17 @@ lv_font_t * lv_binfont_create(const char * path);
  * @return              pointer to font where to load
  */
 lv_font_t * lv_binfont_create_from_buffer(void * buffer, uint32_t size);
+#endif
+
+#if EW_BINFONT_MMAP_ZERO_COPY
+/**
+ * Loads a `lv_font_t` object from a memory-mapped binary font file.
+ * Requires LV_USE_FS_MEMFS.
+ * @param buffer        address of the font file in memory-mapped space
+ * @param size          size of the font file buffer
+ * @return              pointer to font where to load
+ */
+lv_font_t * lv_binfont_create_mmap(const void * buffer, uint32_t size);
 #endif
 
 /**

@@ -27,6 +27,8 @@
 
 #define W25Qxx_CMD_QuadInputPageProgram  	0x34  		// 1-1-4模式下(1线指令1线地址4线数据)，页编程指令，参考写入时间 0.4ms 
 #define W25Qxx_CMD_FastReadQuad_IO       	0xEC  		// 1-4-4模式下(1线指令4线地址4线数据)，快速读取指令
+#define W25Qxx_CMD_ReadData                0x13        // 4字节地址普通读取指令（1-1-1，无空周期）
+#define W25Qxx_CMD_PageProgram_4B          0x12        // 4字节地址页编程指令（1-1-1）
 
 #define W25Qxx_CMD_ReadStatus_REG1			0X05			// 读状态寄存器1
 #define W25Qxx_Status_REG1_BUSY  			0x01			// 读状态寄存器1的第0位（只读），Busy标志位，当正在擦除/写入数据/写命令时会被置1
@@ -52,6 +54,9 @@ uint32_t QSPI_W25Qxx_ReadID(void);					// 读取器件ID
 int8_t	QSPI_W25Qxx_Test(void);						//Flash读写测试
 	
 int8_t 	QSPI_W25Qxx_MemoryMappedMode(void);		// 进入内存映射模式
+int8_t  QSPI_W25Qxx_EnterMemoryMapped(void);     // 进入内存映射模式（带状态判断）
+int8_t  QSPI_W25Qxx_ExitMemoryMapped(void);      // 退出内存映射模式
+uint8_t QSPI_W25Qxx_IsMemoryMapped(void);        // 查询当前是否处于内存映射模式
 	
 int8_t 	QSPI_W25Qxx_SectorErase(uint32_t SectorAddress);		// 扇区擦除，4K字节， 参考擦除时间 45ms
 int8_t 	QSPI_W25Qxx_BlockErase_64K (uint32_t SectorAddress);	// 块擦除，  64K字节，参考擦除时间 150ms，实际使用建议使用64K擦除，擦除的时间最快
@@ -60,6 +65,8 @@ int8_t 	QSPI_W25Qxx_ChipErase (void);                         // 整片擦除，
 int8_t	QSPI_W25Qxx_WritePage(uint8_t* pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite);	// 按页写入，最大256字节
 int8_t	QSPI_W25Qxx_WriteBuffer(uint8_t* pData, uint32_t WriteAddr, uint32_t Size);				// 写入数据，最大不能超过flash芯片的大小
 int8_t 	QSPI_W25Qxx_ReadBuffer(uint8_t* pBuffer, uint32_t ReadAddr, uint32_t NumByteToRead);	// 读取数据，最大不能超过flash芯片的大小
+int8_t  QSPI_W25Qxx_ReadBuffer_Slow(uint8_t* pBuffer, uint32_t ReadAddr, uint32_t NumByteToRead); // 低速可靠读取（1-1-1）
+int8_t  QSPI_W25Qxx_WriteBuffer_Slow(uint8_t* pBuffer, uint32_t WriteAddr, uint32_t Size); // 低速可靠写入（1-1-1）
 
 
 

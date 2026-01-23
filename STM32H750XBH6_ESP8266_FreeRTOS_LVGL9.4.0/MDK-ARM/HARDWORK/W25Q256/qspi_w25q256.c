@@ -44,12 +44,15 @@ int8_t QSPI_W25Qxx_WriteEnable(void);
 
 
 #define W25Qxx_NumByteToTest   	256						// 测试数据的长度（保持小，避免占用过多RAM）
+/* QSPI 时钟较高时需要更大的 DummyCycles，避免读数据错误导致文件系统异常 */
+#define W25Qxx_DUMMY_CYCLES     8
 
 int32_t QSPI_Status ; 		 //检测标志位
 
 uint32_t W25Qxx_TestAddr  =	0x1A20000	;							// 测试地址
 uint8_t  W25Qxx_WriteBuffer[W25Qxx_NumByteToTest];		//	写数据数组
 uint8_t  W25Qxx_ReadBuffer[W25Qxx_NumByteToTest];		//	读数据数组
+static uint8_t g_qspi_mmap_enabled = 0;
 
 static int8_t QSPI_W25Qxx_ReadStatus(uint8_t cmd, uint8_t *out)
 {
@@ -342,6 +345,7 @@ int8_t QSPI_W25Qxx_Init(void)
 	uint32_t	Device_ID;	// 器件ID
 	uint8_t id3[3] = {0, 0, 0};
 	
+	g_qspi_mmap_enabled = 0;
 	QSPI_W25Qxx_Reset();							// 复位器件
 	Device_ID = QSPI_W25Qxx_ReadID_Raw(id3); 		// 读取器件ID（带原始字节）
 	printf("[W25Q256] JEDEC raw=%02X %02X %02X => 0x%06lX\r\n",
@@ -515,14 +519,16 @@ int8_t QSPI_W25Qxx_MemoryMappedMode(void)
 	QSPI_MemoryMappedTypeDef s_mem_mapped_cfg;	 // 内存映射访问参数
 
 	s_command.InstructionMode   = QSPI_INSTRUCTION_1_LINE;    		// 1线指令模式
-	s_command.AddressSize       = QSPI_ADDRESS_32_BITS;     			// 32位地址
-	s_command.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;  		// 无交替字节 
+	s_command.AddressSize       = QSPI_ADDRESS_32_BITS;     			// 32位地址（4字节）
+	s_command.AlternateByteMode = QSPI_ALTERNATE_BYTES_4_LINES;  	// 4线发送 mode byte
+	s_command.AlternateBytesSize = QSPI_ALTERNATE_BYTES_8_BITS;		// 1 字节 mode byte
+	s_command.AlternateBytes    = 0xFF;									// M7-M0 = 0xFF 禁用连续读模式
 	s_command.DdrMode           = QSPI_DDR_MODE_DISABLE;     		// 禁止DDR模式
 	s_command.DdrHoldHalfCycle  = QSPI_DDR_HHC_ANALOG_DELAY; 		// DDR模式中数据延迟，这里用不到
 	s_command.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;			// 每次传输数据都发送指令	
 	s_command.AddressMode 		 = QSPI_ADDRESS_4_LINES; 				// 4线地址模式
 	s_command.DataMode    		 = QSPI_DATA_4_LINES;    				// 4线数据模式
-	s_command.DummyCycles 		 = 6;                    				// 空周期个数
+	s_command.DummyCycles 		 = 4;											// W25Q256 0xEC 命令需要 4 个 dummy cycles（mode byte 单独发送）
 	s_command.Instruction 		 = W25Qxx_CMD_FastReadQuad_IO; 		// 1-4-4模式下(1线指令4线地址4线数据)，快速读取指令
 	
 	s_mem_mapped_cfg.TimeOutActivation = QSPI_TIMEOUT_COUNTER_DISABLE; // 禁用超时计数器, nCS 保持激活状态
@@ -535,7 +541,37 @@ int8_t QSPI_W25Qxx_MemoryMappedMode(void)
 		return W25Qxx_ERROR_MemoryMapped; 	// 设置内存映射模式错误
 	}
 
+	g_qspi_mmap_enabled = 1;
 	return QSPI_W25Qxx_OK; // 配置成功
+}
+
+int8_t QSPI_W25Qxx_EnterMemoryMapped(void)
+{
+	if (g_qspi_mmap_enabled) {
+		return QSPI_W25Qxx_OK;
+	}
+
+	int8_t ret = QSPI_W25Qxx_MemoryMappedMode();
+	if (ret == QSPI_W25Qxx_OK) {
+		g_qspi_mmap_enabled = 1;
+	}
+	return ret;
+}
+
+int8_t QSPI_W25Qxx_ExitMemoryMapped(void)
+{
+	/* 无论是否处于 memory-mapped 模式，都执行 Abort 以确保 HAL 状态正确 */
+	if (HAL_QSPI_Abort(&hqspi) != HAL_OK) {
+		return W25Qxx_ERROR_MemoryMapped;
+	}
+
+	g_qspi_mmap_enabled = 0;
+	return QSPI_W25Qxx_OK;
+}
+
+uint8_t QSPI_W25Qxx_IsMemoryMapped(void)
+{
+	return g_qspi_mmap_enabled;
 }
 
 /*************************************************************************************************
@@ -937,7 +973,7 @@ int8_t QSPI_W25Qxx_ReadBuffer(uint8_t* pBuffer, uint32_t ReadAddr, uint32_t NumB
 	s_command.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;			// 每次传输数据都发送指令	
 	s_command.AddressMode 		 = QSPI_ADDRESS_4_LINES; 				// 4线地址模式
 	s_command.DataMode    		 = QSPI_DATA_4_LINES;    				// 4线数据模式
-	s_command.DummyCycles 		 = 6;                    				// 空周期个数
+	s_command.DummyCycles 		 = W25Qxx_DUMMY_CYCLES;					// 空周期个数
 	s_command.NbData      		 = NumByteToRead;      			   	// 数据长度，最大不能超过flash芯片的大小
 	s_command.Address     		 = ReadAddr;         					// 要读取 W25Qxx 的地址
 	s_command.Instruction 		 = W25Qxx_CMD_FastReadQuad_IO; 		// 1-4-4模式下(1线指令4线地址4线数据)，快速读取指令
@@ -961,6 +997,113 @@ int8_t QSPI_W25Qxx_ReadBuffer(uint8_t* pBuffer, uint32_t ReadAddr, uint32_t NumB
 		return W25Qxx_ERROR_AUTOPOLLING; // 轮询等待无响应
 	}
 	return QSPI_W25Qxx_OK;	// 读取数据成功
+}
+
+int8_t QSPI_W25Qxx_ReadBuffer_Slow(uint8_t* pBuffer, uint32_t ReadAddr, uint32_t NumByteToRead)
+{
+	QSPI_CommandTypeDef s_command;	// QSPI传输配置
+
+	if (pBuffer == NULL || NumByteToRead == 0U) {
+		return W25Qxx_ERROR_TRANSMIT;
+	}
+
+	s_command.InstructionMode   = QSPI_INSTRUCTION_1_LINE;			// 1线指令模式
+	s_command.AddressSize       = QSPI_ADDRESS_32_BITS;     	 		// 32位地址
+	s_command.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;  		// 无交替字节 
+	s_command.DdrMode           = QSPI_DDR_MODE_DISABLE;     		// 禁止DDR模式
+	s_command.DdrHoldHalfCycle  = QSPI_DDR_HHC_ANALOG_DELAY; 		// DDR模式中数据延迟，这里用不到
+	s_command.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;			// 每次传输数据都发送指令	
+	s_command.AddressMode 		 = QSPI_ADDRESS_1_LINE; 				// 1线地址模式
+	s_command.DataMode    		 = QSPI_DATA_1_LINE;    				// 1线数据模式
+	s_command.DummyCycles 		 = 0;                    				// 无空周期
+	s_command.NbData      		 = NumByteToRead;      			   	// 数据长度
+	s_command.Address     		 = ReadAddr;         					// 要读取地址
+	s_command.Instruction 		 = W25Qxx_CMD_ReadData; 				// 普通读取指令
+
+	if (HAL_QSPI_Command(&hqspi, &s_command, HAL_QPSI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+	{
+		return W25Qxx_ERROR_TRANSMIT;		// 传输错误
+	}
+
+	if (HAL_QSPI_Receive(&hqspi, pBuffer, HAL_QPSI_TIMEOUT_DEFAULT_VALUE) != HAL_OK)
+	{
+		return W25Qxx_ERROR_TRANSMIT;		// 传输错误
+	}
+
+	return QSPI_W25Qxx_OK;
+}
+
+static int8_t QSPI_W25Qxx_WritePage_Slow(uint8_t* pBuffer, uint32_t WriteAddr, uint16_t NumByteToWrite)
+{
+	QSPI_CommandTypeDef s_command;	// QSPI传输配置
+
+	if (pBuffer == NULL || NumByteToWrite == 0U) {
+		return W25Qxx_ERROR_TRANSMIT;
+	}
+
+	s_command.InstructionMode   = QSPI_INSTRUCTION_1_LINE;    		// 1线指令模式
+	s_command.AddressSize       = QSPI_ADDRESS_32_BITS;     	 	// 32位地址
+	s_command.AlternateByteMode = QSPI_ALTERNATE_BYTES_NONE;  		// 无交替字节
+	s_command.DdrMode           = QSPI_DDR_MODE_DISABLE;     		// 禁止DDR模式
+	s_command.DdrHoldHalfCycle  = QSPI_DDR_HHC_ANALOG_DELAY; 		// DDR模式中数据延迟，这里用不到
+	s_command.SIOOMode          = QSPI_SIOO_INST_EVERY_CMD;			// 每次传输数据都发送指令
+	s_command.AddressMode 		 = QSPI_ADDRESS_1_LINE; 				// 1线地址模式
+	s_command.DataMode    		 = QSPI_DATA_1_LINE;    				// 1线数据模式
+	s_command.DummyCycles 		 = 0;                    				// 空周期
+	s_command.NbData      		 = NumByteToWrite;      			   	// 数据长度
+	s_command.Address     		 = WriteAddr;         					// 要写入地址
+	s_command.Instruction 		 = W25Qxx_CMD_PageProgram_4B; 			// 4字节地址页编程指令
+
+	if (QSPI_W25Qxx_WriteEnable() != QSPI_W25Qxx_OK) {
+		return W25Qxx_ERROR_WriteEnable;
+	}
+
+	if (HAL_QSPI_Command(&hqspi, &s_command, HAL_QPSI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) {
+		return W25Qxx_ERROR_TRANSMIT;
+	}
+
+	if (HAL_QSPI_Transmit(&hqspi, pBuffer, HAL_QPSI_TIMEOUT_DEFAULT_VALUE) != HAL_OK) {
+		return W25Qxx_ERROR_TRANSMIT;
+	}
+
+	if (QSPI_W25Qxx_AutoPollingMemReady() != QSPI_W25Qxx_OK) {
+		return W25Qxx_ERROR_AUTOPOLLING;
+	}
+
+	return QSPI_W25Qxx_OK;
+}
+
+int8_t QSPI_W25Qxx_WriteBuffer_Slow(uint8_t* pBuffer, uint32_t WriteAddr, uint32_t Size)
+{
+	uint32_t end_addr, current_size, current_addr;
+	uint8_t *write_data;
+
+	if (pBuffer == NULL || Size == 0U) {
+		return W25Qxx_ERROR_TRANSMIT;
+	}
+
+	current_size = W25Qxx_PageSize - (WriteAddr % W25Qxx_PageSize);
+	if (current_size > Size) {
+		current_size = Size;
+	}
+
+	current_addr = WriteAddr;
+	end_addr = WriteAddr + Size;
+	write_data = pBuffer;
+
+	do
+	{
+		if (QSPI_W25Qxx_WritePage_Slow(write_data, current_addr, (uint16_t)current_size) != QSPI_W25Qxx_OK) {
+			return W25Qxx_ERROR_TRANSMIT;
+		}
+
+		current_addr += current_size;
+		write_data += current_size;
+		current_size = ((current_addr + W25Qxx_PageSize) > end_addr) ? (end_addr - current_addr) : W25Qxx_PageSize;
+	}
+	while (current_addr < end_addr);
+
+	return QSPI_W25Qxx_OK;
 }
 
 

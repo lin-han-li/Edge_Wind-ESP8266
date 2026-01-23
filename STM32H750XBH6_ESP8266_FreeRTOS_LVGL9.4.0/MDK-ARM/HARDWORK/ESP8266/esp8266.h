@@ -9,6 +9,7 @@ extern "C"
 #include "main.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include "sd_config.h"
 
 /* ================= 用户配置区 ================= */
 // 引入用户具体的 WiFi 和服务器配置
@@ -41,6 +42,11 @@ extern "C"
  */
 #ifndef ESP_DEBUG
 #define ESP_DEBUG 1 // 1: 开启调试日志，0: 关闭
+#endif
+
+/* 是否周期性输出 USART2 RX/ERR 统计（默认关闭，避免未上报时刷屏） */
+#ifndef ESP_DEBUG_STATS
+#define ESP_DEBUG_STATS 0
 #endif
 
 #ifndef ESP_LOG_UART_PORT
@@ -113,6 +119,31 @@ extern "C"
     void ESP_Register(void);            // 向服务器注册节点信息
     void ESP_Console_Init(void);        // 初始化调试控制台中断
     void ESP_Console_Poll(void);        // 在主循环中轮询控制台输入
+    const SystemConfig_t *ESP_Config_Get(void);
+    void ESP_Config_Apply(const SystemConfig_t *cfg);
+
+    /* ================= DeviceConnect(UI) 驱动接口 =================
+     * 目标：ESP8266 不再开机自启动连接，由 UI 的“WiFi/TCP/注册/上报/一键连接”按钮触发
+     */
+    typedef enum
+    {
+        ESP_UI_CMD_WIFI = 0,
+        ESP_UI_CMD_TCP,
+        ESP_UI_CMD_REG,
+        ESP_UI_CMD_REPORT_TOGGLE,
+        ESP_UI_CMD_AUTO_CONNECT,
+    } esp_ui_cmd_t;
+
+    typedef void (*esp_ui_log_hook_t)(const char *line, void *ctx);
+    typedef void (*esp_ui_step_hook_t)(esp_ui_cmd_t step, bool ok, void *ctx);
+
+    void ESP_UI_SetHooks(esp_ui_log_hook_t log_hook, void *log_ctx,
+                         esp_ui_step_hook_t step_hook, void *step_ctx);
+    void ESP_UI_TaskInit(void);                 // 在 ESP8266_Task 里调用一次（创建消息队列）
+    bool ESP_UI_SendCmd(esp_ui_cmd_t cmd);      // UI 线程调用（不阻塞）
+    void ESP_UI_TaskPoll(void);                 // 在 ESP8266_Task 循环里调用（处理UI命令）
+    bool ESP_UI_IsReporting(void);              // 查询当前是否在上报状态
+    void ESP_UI_InvalidateReg(void);            // UI 用：注册过期/停止上报过久时清除就绪标志，要求重新注册
 
 #ifdef __cplusplus
 }

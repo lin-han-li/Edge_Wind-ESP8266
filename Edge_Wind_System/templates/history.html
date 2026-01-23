@@ -433,6 +433,16 @@
         }
     }
 
+    function escapeHtml(s) {
+        // 防止 nodeId 含特殊字符导致 HTML/属性注入
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function renderNodeList(nodes) {
         if (!nodes || nodes.length === 0) {
             elNodeList.innerHTML = '<div class="text-center text-muted py-3">暂无匹配节点</div>';
@@ -449,13 +459,14 @@
             const recordCount = node.record_count || 0;
             const isActive = nodeId === selectedNodeId;
             const activeClass = isActive ? 'active' : '';
+            const nodeIdEsc = escapeHtml(nodeId);
             
             html += `
                 <a href="javascript:void(0)" class="list-group-item list-group-item-action node-item ${activeClass}" 
-                   data-node-id="${nodeId}" onclick="selectNode('${nodeId}')">
+                   data-node-id="${nodeIdEsc}">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div class="text-truncate" style="max-width: 150px;" title="${nodeId}">
-                            <i class="bi bi-hdd-network me-1"></i>${nodeId}
+                        <div class="text-truncate" style="max-width: 150px;" title="${nodeIdEsc}">
+                            <i class="bi bi-hdd-network me-1"></i>${nodeIdEsc}
                         </div>
                         <div class="d-flex align-items-center gap-1">
                             <small class="text-muted">${recordCount}条</small>
@@ -731,6 +742,16 @@
 
     // ========== 绑定事件 ==========
     function bindEvents() {
+        // 节点列表点击（事件委托，避免把 nodeId 拼进 onclick 导致引号问题）
+        elNodeList.addEventListener('click', (e) => {
+            const a = e.target.closest && e.target.closest('.node-item');
+            if (!a) return;
+            const nodeId = a.dataset && a.dataset.nodeId ? a.dataset.nodeId : '';
+            if (nodeId) {
+                window.selectNode(nodeId);
+            }
+        });
+
         // 节点搜索（实时过滤）
         let searchTimeout = null;
         elNodeSearch.addEventListener('input', () => {

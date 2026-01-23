@@ -492,6 +492,16 @@
         window.location.href = '/monitor';
     }
 
+    // 安全：避免把 device_id/location 直接拼进 innerHTML/属性导致注入或引号问题
+    function escapeHtml(s) {
+        return String(s ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function renderNodeStatusList(devices) {
         const container = document.getElementById('node-status-list');
 
@@ -511,6 +521,8 @@
 
         // 使用新的网格布局和样式类
         const html = visibleDevices.map(device => {
+            const deviceId = device.device_id || '';
+            const deviceIdEsc = escapeHtml(deviceId);
             const statusColor = device.status === 'online' ? '#10b981' : 
                                device.status === 'faulty' || device.status === 'fault' ? '#ef4444' : '#64748b';
             const statusText = device.status === 'online' ? '在线' : 
@@ -530,29 +542,41 @@
             
             // 获取故障代码（如果有）
             const faultCode = device.fault_code || '';
+            const faultCodeEsc = escapeHtml(faultCode);
             const faultCodeDisplay = (device.status === 'faulty' || device.status === 'fault') && faultCode ? 
-                                     `<span class="badge bg-danger ms-1">${faultCode}</span>` : '';
+                                     `<span class="badge bg-danger ms-1">${faultCodeEsc}</span>` : '';
             
             // 获取位置信息（如果有，否则使用设备ID）
             const locationText = device.location || device.device_id || '';
+            const locationTextEsc = escapeHtml(locationText);
             
             return `
-                <div class="node-status-card ${stateClass}" onclick="navigateToMonitor('${device.device_id || ''}')">
+                <div class="node-status-card ${stateClass}" data-device-id="${deviceIdEsc}">
                     <div class="d-flex justify-content-between align-items-start mb-2">
                         <div class="flex-grow-1" style="min-width: 0;">
                             <span style="width: 10px; height: 10px; background: ${statusColor}; border-radius: 50%; display: inline-block; margin-right: 8px; flex-shrink: 0;"></span>
-                            <span class="node-id-text" title="${device.device_id || ''}">${device.device_id || '未知边缘节点'}</span>
+                            <span class="node-id-text" title="${deviceIdEsc}">${deviceIdEsc || '未知边缘节点'}</span>
                         </div>
                         <span class="badge bg-${badgeClass} node-status-badge">${statusText}</span>
                     </div>
                     ${faultCodeDisplay}
-                    ${locationText ? `<div class="node-desc-text mt-2">${locationText}</div>` : ''}
+                    ${locationTextEsc ? `<div class="node-desc-text mt-2">${locationTextEsc}</div>` : ''}
                 </div>
             `;
         }).join('');
         
         container.innerHTML = html;
     }
+
+    // 节点卡片点击（事件委托，避免把 device_id 拼进 onclick 字符串导致引号问题）
+    document.addEventListener('click', (e) => {
+        const card = e.target && e.target.closest ? e.target.closest('.node-status-card') : null;
+        if (!card) return;
+        const deviceId = card.dataset ? card.dataset.deviceId : '';
+        if (deviceId) {
+            navigateToMonitor(deviceId);
+        }
+    });
 
     // 初始化
     document.addEventListener('DOMContentLoaded', function() {

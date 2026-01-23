@@ -13,6 +13,7 @@
 
 #include "scr_boot_anim.h"
 #include "../edgewind_theme.h"
+#include "../edgewind_ui.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -913,6 +914,7 @@ static void enter_btn_click_cb(lv_event_t *e)
     lv_obj_remove_event_cb(btn, enter_btn_click_cb); /* 移除事件回调 */
     
     ew_boot_anim.finished = true;
+    edgewind_ui_on_enter_system();
 }
 
 static void start_zoomout_phase(void)

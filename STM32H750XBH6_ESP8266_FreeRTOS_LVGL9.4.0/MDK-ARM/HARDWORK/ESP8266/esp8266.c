@@ -146,12 +146,76 @@ static inline uint8_t ESP_RxBusyDetected(void)
 /* 4 个通道的传感器数据结构体实例，用于存储电压、电流、FFT结果等 */
 Channel_Data_t node_channels[4];
 volatile uint8_t g_esp_ready = 0; // 全局标志：1 表示 WiFi/TCP 就绪，可以发送
+/* UI“开始/停止上报”开关：用于门控后台自动重连等行为 */
+static volatile uint8_t g_report_enabled = 0;
+
+static SystemConfig_t g_sys_cfg;
+static uint8_t g_sys_cfg_loaded = 0;
+
+static void ESP_LoadConfig(void)
+{
+    if (g_sys_cfg_loaded) {
+        return;
+    }
+    /* ⚠️ 启动阶段不要依赖 SD 卡：
+     * - SD 可能未插入/未就绪，FatFs f_mount/f_read 在某些异常场景会阻塞很久
+     * - 这里仅加载默认值；真正从 SD 读取/保存由“配置界面”触发
+     */
+    SD_Config_SetDefaults(&g_sys_cfg);
+    g_sys_cfg_loaded = 1;
+}
+
+const SystemConfig_t *ESP_Config_Get(void)
+{
+    if (!g_sys_cfg_loaded) {
+        ESP_LoadConfig();
+    }
+    return &g_sys_cfg;
+}
+
+void ESP_Config_Apply(const SystemConfig_t *cfg)
+{
+    if (!cfg) {
+        return;
+    }
+    g_sys_cfg = *cfg;
+    g_sys_cfg_loaded = 1;
+}
 
 /* DSP 相关变量：用于 FFT 计算 */
 static arm_rfft_fast_instance_f32 S;
 static uint8_t fft_initialized = 0;
 static float32_t fft_output_buf[WAVEFORM_POINTS]; // FFT 输出复数数组
 static float32_t fft_mag_buf[WAVEFORM_POINTS];    // FFT 幅值数组
+
+/* UI 模式/非 ESP_Init 路径也必须初始化通道元数据，否则后端会把 4 个通道都当成 id=0 覆盖成“一个通道” */
+static void ESP_Init_Channels_And_DSP(void)
+{
+    /* FFT init */
+    if (!fft_initialized)
+    {
+        arm_rfft_fast_init_f32(&S, WAVEFORM_POINTS);
+        fft_initialized = 1;
+    }
+
+    /* 通道元数据（与后端识别规则对应） */
+    memset(node_channels, 0, sizeof(node_channels));
+    node_channels[0].id = 0;
+    strncpy(node_channels[0].label, "直流母线(+)", 31);
+    strncpy(node_channels[0].unit, "V", 7);
+
+    node_channels[1].id = 1;
+    strncpy(node_channels[1].label, "直流母线(-)", 31);
+    strncpy(node_channels[1].unit, "V", 7);
+
+    node_channels[2].id = 2;
+    strncpy(node_channels[2].label, "负载电流", 31);
+    strncpy(node_channels[2].unit, "A", 7);
+
+    node_channels[3].id = 3;
+    strncpy(node_channels[3].label, "漏电流", 31);
+    strncpy(node_channels[3].unit, "mA", 7);
+}
 
 /* 内部函数声明 */
 static void ESP_Log(const char *format, ...);
@@ -174,6 +238,7 @@ static void ESP_Console_HandleLine(char *line);
 static void StrTrimInPlace(char *s);
 static void ESP_StreamRx_Start(void);
 static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len);
+void ESP_UI_Internal_OnLog(const char *line);
 
 // “核武器”：强制停止 USART2 的 RX DMA/中断状态机，切换到 AT(阻塞收发)前必须调用
 static void ESP_ForceStop_DMA(void);
@@ -334,6 +399,11 @@ void ESP_Init(void)
     g_esp_ready = 0;
     int retry_count = 0;
 
+    // 尝试从 SD 卡加载配置（如果失败则使用默认值）
+    /* 启动阶段仅使用默认配置，避免 SD 卡异常导致启动卡死 */
+    ESP_LoadConfig();
+    ESP_Log("[ESP] Using default config SSID=%s\r\n", g_sys_cfg.wifi_ssid);
+
     // 步骤 1: 进 AT 模式前，必须清场，确保 UART 处于 READY 状态
     // 否则 HAL_UART_Receive 会直接返回 BUSY，导致初始化失败
     g_uart2_at_mode = 1;
@@ -362,8 +432,8 @@ void ESP_Init(void)
     }
 
     ESP_Log("\r\n[ESP] 初始化（4通道模式）...\r\n");
-    ESP_Log("[ESP] WiFi 名称(SSID): %s\r\n", WIFI_SSID);
-    ESP_Log("[ESP] 服务器地址: %s:%d\r\n", SERVER_IP, SERVER_PORT);
+    ESP_Log("[ESP] WiFi 名称(SSID): %s\r\n", g_sys_cfg.wifi_ssid);
+    ESP_Log("[ESP] 服务器地址: %s:%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
     ESP_Clear_Error_Flags();
 
     // 步骤 3: 优先尝试复用“透传 + TCP”现有连接
@@ -395,7 +465,7 @@ void ESP_Init(void)
     // 如果还是进不去 AT 模式，执行硬复位 (硬件重启模组)
     if (!at_ok)
     {
-        ESP_Log("[ESP] AT无回显，执行硬复位ESP8266...\r\n");
+        ESP_Log("[ESP] AT无回显,执行硬复位ESP8266...\r\n");
         ESP_HardReset();
         // 硬复位后，HAL 库状态可能被中断打断，再次确保处于 AT(阻塞)可用状态
         ESP_ForceStop_DMA();
@@ -403,7 +473,7 @@ void ESP_Init(void)
         // 复位后再探测一次 AT
         if (!ESP_Send_Cmd("AT\r\n", "OK", 1500))
         {
-            ESP_Log("[ESP] 致命：硬复位后仍无法进入 AT 模式\r\n");
+					ESP_Log("[ESP] 致命:硬复位后仍无法进入 AT 模式\r\n");
             return;
         }
     }
@@ -417,7 +487,7 @@ void ESP_Init(void)
     // 关闭回显 (ATE0)，方便后续指令解析
     while (!ESP_Send_Cmd("ATE0\r\n", "OK", 500))
     {
-        ESP_Log("[ESP] 关闭回显失败，重试 ATE0...\r\n");
+        ESP_Log("[ESP] 关闭回显失败,重试 ATE0...\r\n");
         ESP_Clear_Error_Flags();
         HAL_Delay(500);
         retry_count++;
@@ -429,7 +499,7 @@ void ESP_Init(void)
     ESP_Send_Cmd("AT+CWMODE=1\r\n", "OK", 1000);
 
     // 连接 WiFi
-    sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+    sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", g_sys_cfg.wifi_ssid, g_sys_cfg.wifi_password);
     if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000)) // 给足 20s 超时
     {
         // 重试一次
@@ -450,7 +520,7 @@ void ESP_Init(void)
         {
             break;
         }
-        ESP_Log("[ESP] CIFSR 无响应/忙，准备重试...\r\n");
+        ESP_Log("[ESP] CIFSR 无响应/忙,准备重试...\r\n");
         HAL_Delay(600);
     }
     ESP_Log_RxBuf("CIFSR");
@@ -458,7 +528,7 @@ void ESP_Init(void)
     /* TCP 连接 */
     // 先关闭可能存在的旧连接（无连接时可能返回 ERROR，视为成功）
     (void)ESP_Send_Cmd_Any("AT+CIPCLOSE\r\n", "OK", "ERROR", 500);
-    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", SERVER_IP, SERVER_PORT);
+    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
     uint8_t tcp_ok = 0;
     for (int k = 0; k < 3; k++)
     {
@@ -479,7 +549,7 @@ void ESP_Init(void)
             HAL_Delay(800);
             continue;
         }
-        ESP_Log("[ESP] CIPSTART 失败，准备重试...\r\n");
+        ESP_Log("[ESP] CIPSTART 失败,准备重试...\r\n");
         HAL_Delay(800);
     }
     if (!tcp_ok)
@@ -500,7 +570,7 @@ void ESP_Init(void)
     // 发送注册包 (告诉服务器我是谁)
     ESP_Register();
     g_esp_ready = 1;
-    ESP_Log("[ESP] 系统就绪（4通道），开始上报数据。\r\n");
+    ESP_Log("[ESP] 系统就绪（4通道）,开始上报数据。\r\n");
 
     // 步骤 5: 启动 USART2 接收（DMA + IDLE）
     // 用于接收 /api/node/heartbeat 的响应中的 command/reset
@@ -714,6 +784,7 @@ void ESP_Console_Init(void)
 void ESP_Console_Poll(void)
 {
 #if (ESP_CONSOLE_ENABLE)
+    uint32_t now = HAL_GetTick();
     // 1) 处理“已收到的一整行”控制台指令
     if (g_console_line_ready)
     {
@@ -732,17 +803,16 @@ void ESP_Console_Poll(void)
     }
 
     // 2.1) 链路异常：尽快软重连，避免长时间“卡住”
-    if (g_link_reconnect_pending && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
+    if (g_report_enabled && g_link_reconnect_pending && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
     {
         g_link_reconnect_pending = 0;
-        ESP_Log("[ESP] 侦测到链路异常关键字，触发软重连...\r\n");
+        ESP_Log("[ESP] 侦测到链路异常关键字,触发软重连...\r\n");
         ESP_SoftReconnect();
     }
 
-#if (ESP_DEBUG)
+#if (ESP_DEBUG && ESP_DEBUG_STATS)
     // 3) 调试：每 1 秒输出一次统计信息 (确认 RX 是否存活)
     static uint32_t last_dbg = 0;
-    uint32_t now = HAL_GetTick();
     if ((now - last_dbg) >= 1000)
     {
         last_dbg = now;
@@ -769,7 +839,7 @@ void ESP_Console_Poll(void)
     {
         last_link_check = now;
         // 只有当“已连接”、“非重连中”且“非AT模式”时才检查
-        if (g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
+        if (g_report_enabled && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
         {
             // 正常情况下服务器会对每次心跳返回 HTTP 响应
             uint32_t no_rx_ms = (uint32_t)ESP_NO_SERVER_RX_HARDRESET_SEC * 1000u;
@@ -798,6 +868,11 @@ void ESP_Console_Poll(void)
                     ESP_SoftReconnect();
                 }
             }
+        }
+        else
+        {
+            /* 停止上报后：禁止后台自动重连/硬复位重连，仅清空计数避免下次误触发 */
+            no_rx_miss = 0;
         }
     }
 #else
@@ -832,7 +907,7 @@ void ESP_Post_Data(void)
 
     // JSON Header
     if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"channels\":[",
-                    NODE_ID, g_fault_code, (unsigned long)seq))
+                    g_sys_cfg.node_id, g_fault_code, (unsigned long)seq))
         return;
 
     // 循环写入 4 个通道的数据
@@ -893,7 +968,7 @@ void ESP_Post_Data(void)
                           "Content-Type: application/json\r\n"
                           "Content-Length: %lu\r\n"
                           "\r\n",
-                          SERVER_IP, SERVER_PORT, (unsigned long)body_len);
+                          g_sys_cfg.server_ip, g_sys_cfg.server_port, (unsigned long)body_len);
     if (header_len <= 0 || (uint32_t)header_len >= header_reserve_len)
         return;
     // 把 Body 接回来
@@ -960,7 +1035,7 @@ void ESP_Post_Heartbeat(void)
     char req[256];
     int body_len = snprintf(body, sizeof(body),
                             "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"channels\":[]}",
-                            NODE_ID, g_fault_code);
+                            g_sys_cfg.node_id, g_fault_code);
     if (body_len <= 0 || body_len >= (int)sizeof(body))
         return;
     int req_len = snprintf(req, sizeof(req),
@@ -970,7 +1045,7 @@ void ESP_Post_Heartbeat(void)
                            "Content-Length: %d\r\n"
                            "\r\n"
                            "%s",
-                           SERVER_IP, SERVER_PORT, body_len, body);
+                           g_sys_cfg.server_ip, g_sys_cfg.server_port, body_len, body);
     if (req_len <= 0 || req_len >= (int)sizeof(req))
         return;
 
@@ -1048,12 +1123,12 @@ static void ESP_StreamRx_Start(void)
         {
             __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
         }
-        ESP_Log("[ESP] 已开启 USART2 RX(DMA+IDLE)：用于接收服务器下发命令\r\n");
+        ESP_Log("[ESP] 已开启 USART2 RX(DMA+IDLE):用于接收服务器下发命令\r\n");
     }
     else
     {
         g_usart2_rx_started = 0;
-        ESP_Log("[ESP] 开启 USART2 RX(DMA+IDLE) 失败，status=%d（将无法接收 reset 命令）\r\n", (int)st);
+        ESP_Log("[ESP] 开启 USART2 RX(DMA+IDLE) 失败,status=%d（将无法接收 reset 命令）\r\n", (int)st);
     }
 }
 
@@ -1078,7 +1153,7 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
         g_server_reset_pending = 1;
     }
     // 3) 链路异常检测：尽早触发软重连，避免长时间“卡住”
-    if (!g_link_reconnecting &&
+    if (g_report_enabled && !g_link_reconnecting &&
         (ESP_BufContains(data, len, "CLOSED") ||
          ESP_BufContains(data, len, "CONNECT FAIL") ||
          ESP_BufContains(data, len, "ERROR") ||
@@ -1278,11 +1353,11 @@ void ESP_Register(void)
 {
     char *body_start = (char *)http_packet_buf + 256;
     ESP_Log("[ESP] 正在注册设备...\r\n");
-    sprintf(body_start, "{\"device_id\":\"%s\",\"location\":\"%s\",\"hw_version\":\"v1.0_4CH\"}", NODE_ID, NODE_LOCATION);
+    sprintf(body_start, "{\"device_id\":\"%s\",\"location\":\"%s\",\"hw_version\":\"v1.0_4CH\"}", g_sys_cfg.node_id, g_sys_cfg.node_location);
     uint32_t body_len = strlen(body_start);
     int h_len = sprintf((char *)http_packet_buf,
                         "POST /api/register HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\nContent-Length: %u\r\n\r\n",
-                        SERVER_IP, SERVER_PORT, body_len);
+                        g_sys_cfg.server_ip, g_sys_cfg.server_port, body_len);
     memmove(http_packet_buf + h_len, body_start, body_len);
     HAL_UART_Transmit(&huart2, http_packet_buf, h_len + body_len, 1000);
 
@@ -1290,7 +1365,7 @@ void ESP_Register(void)
     memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
     uint32_t start = HAL_GetTick();
     uint16_t idx = 0;
-    while ((HAL_GetTick() - start) < 800)
+    while ((HAL_GetTick() - start) < 3000)
     {
         uint8_t ch;
         if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
@@ -1396,7 +1471,7 @@ static uint8_t ESP_TryReuseTransparent(void)
     ESP_Uart2_Drain(100);
 
     char *body = (char *)http_packet_buf + 256;
-    sprintf(body, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\"}", NODE_ID, g_fault_code);
+    sprintf(body, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\"}", g_sys_cfg.node_id, g_fault_code);
     uint32_t body_len = (uint32_t)strlen(body);
     int h_len = sprintf((char *)http_packet_buf,
                         "POST /api/node/heartbeat HTTP/1.1\r\n"
@@ -1404,7 +1479,7 @@ static uint8_t ESP_TryReuseTransparent(void)
                         "Content-Type: application/json\r\n"
                         "Content-Length: %lu\r\n"
                         "\r\n",
-                        SERVER_IP, SERVER_PORT, (unsigned long)body_len);
+                        g_sys_cfg.server_ip, g_sys_cfg.server_port, (unsigned long)body_len);
     memmove(http_packet_buf + h_len, body, body_len);
 
     // 探测包小，阻塞发送即可
@@ -1434,7 +1509,7 @@ static void ESP_SoftReconnect(void)
 
     if (!ESP_Exit_Transparent_Mode_Strict(2000))
     {
-        ESP_Log("[ESP] 软重连失败：无法退出透传 -> 硬复位ESP8266\r\n");
+			ESP_Log("[ESP] 软重连失败:无法退出透传 -> 硬复位ESP8266\r\n");
         g_link_reconnecting = 0;
         ESP_HardReset();
         // 复位后走完整初始化（会重建 WiFi/TCP/透传）
@@ -1445,10 +1520,10 @@ static void ESP_SoftReconnect(void)
     // 重建 TCP 并重新进入透传
     ESP_Send_Cmd("AT+CIPCLOSE\r\n", "OK", 1500);
     char cmd_buf[128];
-    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", SERVER_IP, SERVER_PORT);
+    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
     if (!ESP_Send_Cmd(cmd_buf, "CONNECT", 10000))
     {
-        ESP_Log("[ESP] 软重连失败：CIPSTART -> 硬复位ESP8266\r\n");
+			ESP_Log("[ESP] 软重连失败:CIPSTART -> 硬复位ESP8266\r\n");
         g_link_reconnecting = 0;
         ESP_HardReset();
         ESP_Init();
@@ -1490,9 +1565,10 @@ static void ESP_HardReset(void)
     HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_RESET);
     HAL_Delay(120);
     HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_SET);
-    HAL_Delay(1500);
+    /* 某些固件在高波特率下上电/复位后需要更久才会响应 AT */
+    HAL_Delay(2500);
     ESP_Clear_Error_Flags();
-    ESP_Uart2_Drain(200);
+    ESP_Uart2_Drain(400);
 #else
     // 若硬件未接 RST 引脚，只能提示用户断电
     ESP_Log("[ESP] 未定义 ESP8266_RST_Pin，无法硬复位（请接 RST/EN 到GPIO）\r\n");
@@ -1511,7 +1587,7 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
     // 打印命令（敏感信息脱敏）
     if (cmd && (strncmp(cmd, "AT+CWJAP=", 9) == 0))
     {
-        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", WIFI_SSID);
+        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", g_sys_cfg.wifi_ssid);
     }
     else if (cmd)
     {
@@ -1519,7 +1595,13 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
     }
 #endif
 
-    HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100);
+    /* 发送：若 HAL 状态机异常（BUSY），尝试 Abort 后重发一次 */
+    if (HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100) != HAL_OK)
+    {
+        (void)HAL_UART_Abort(&huart2);
+        ESP_Clear_Error_Flags();
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 200);
+    }
     start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout)
     {
@@ -1537,6 +1619,15 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
                     ESP_Log("[ESP 期望] << %s\r\n", reply);
 #endif
                     return 1;
+                }
+                /* 早退：出现 ERROR/FAIL 时无需继续等（减少“超时假象”） */
+                if (strstr((char *)esp_rx_buf, "ERROR") || strstr((char *)esp_rx_buf, "FAIL"))
+                {
+#if (ESP_DEBUG)
+									ESP_Log("[ESP] 早退:检测到 ERROR/FAIL\r\n");
+                    ESP_Log_RxBuf("ERR");
+#endif
+                    return 0;
                 }
                 if (ESP_RxBusyDetected())
                 {
@@ -1577,7 +1668,7 @@ static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char 
 #if (ESP_DEBUG)
     if (cmd && (strncmp(cmd, "AT+CWJAP=", 9) == 0))
     {
-        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", WIFI_SSID);
+        ESP_Log("[ESP 指令] >> AT+CWJAP=\"%s\",\"******\"\r\n", g_sys_cfg.wifi_ssid);
     }
     else if (cmd)
     {
@@ -1585,7 +1676,12 @@ static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char 
     }
 #endif
 
-    HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100);
+    if (HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 100) != HAL_OK)
+    {
+        (void)HAL_UART_Abort(&huart2);
+        ESP_Clear_Error_Flags();
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)cmd, strlen(cmd), 200);
+    }
     start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout)
     {
@@ -1605,11 +1701,16 @@ static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char 
 #endif
                     return 1;
                 }
+                if (strstr((char *)esp_rx_buf, "ERROR") || strstr((char *)esp_rx_buf, "FAIL"))
+                {
+                    /* 允许上层从 esp_rx_buf 里判断具体错误，但不再傻等超时 */
+                    return 0;
+                }
                 if (ESP_RxBusyDetected())
                 {
                     busy_hits++;
 #if (ESP_DEBUG)
-                    ESP_Log("[ESP] 模组忙(busy)，等待中...\r\n");
+                    ESP_Log("[ESP] 模组忙(busy),等待中...\r\n");
 #endif
                     memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
                     idx = 0;
@@ -1688,4 +1789,507 @@ static void ESP_Log(const char *format, ...)
 #else
     (void)log_buf;
 #endif
+
+    /* 额外：推送给 UI（DeviceConnect 控制台） */
+    ESP_UI_Internal_OnLog(log_buf);
+}
+
+/* ================= DeviceConnect(UI) 驱动实现 ================= */
+
+typedef struct
+{
+    esp_ui_log_hook_t log_hook;
+    void *log_ctx;
+    esp_ui_step_hook_t step_hook;
+    void *step_ctx;
+} esp_ui_hooks_t;
+
+static esp_ui_hooks_t g_ui_hooks;
+static osMessageQueueId_t g_esp_ui_q = NULL;
+static volatile uint8_t g_ui_wifi_ok = 0;
+static volatile uint8_t g_ui_tcp_ok = 0;
+static volatile uint8_t g_ui_reg_ok = 0;
+
+void ESP_UI_SetHooks(esp_ui_log_hook_t log_hook, void *log_ctx,
+                     esp_ui_step_hook_t step_hook, void *step_ctx)
+{
+    g_ui_hooks.log_hook = log_hook;
+    g_ui_hooks.log_ctx = log_ctx;
+    g_ui_hooks.step_hook = step_hook;
+    g_ui_hooks.step_ctx = step_ctx;
+}
+
+/* 供 ESP_Log 调用：避免静态函数直接访问 hook 造成声明顺序问题 */
+void ESP_UI_Internal_OnLog(const char *line)
+{
+    if (g_ui_hooks.log_hook && line)
+    {
+        g_ui_hooks.log_hook(line, g_ui_hooks.log_ctx);
+    }
+}
+
+static void esp_ui_step_done(esp_ui_cmd_t step, bool ok)
+{
+    if (g_ui_hooks.step_hook)
+    {
+        g_ui_hooks.step_hook(step, ok, g_ui_hooks.step_ctx);
+    }
+}
+
+void ESP_UI_TaskInit(void)
+{
+    if (g_esp_ui_q)
+        return;
+    g_esp_ui_q = osMessageQueueNew(8, sizeof(uint8_t), NULL);
+
+    /* UI 模式下也建议在任务启动时把模组复位到干净状态，但不做任何连接。
+     * 目的：避免用户第一次点“WiFi连接”时 ESP 还在上电启动/透传残留，导致 AT 连续超时。 */
+#ifndef EW_ESP_UI_BOOT_HARDRESET_ONCE
+#define EW_ESP_UI_BOOT_HARDRESET_ONCE 1
+#endif
+#if (EW_ESP_UI_BOOT_HARDRESET_ONCE)
+    if (!g_boot_hardreset_done)
+    {
+        g_boot_hardreset_done = 1;
+        ESP_Log("[ESP] UI: boot hard reset once (no auto connect)\r\n");
+        ESP_HardReset();
+    }
+#endif
+}
+
+bool ESP_UI_SendCmd(esp_ui_cmd_t cmd)
+{
+    if (!g_esp_ui_q)
+        return false;
+    uint8_t c = (uint8_t)cmd;
+    return (osMessageQueuePut(g_esp_ui_q, &c, 0U, 0U) == osOK);
+}
+
+bool ESP_UI_IsReporting(void)
+{
+    return (g_report_enabled != 0U);
+}
+
+void ESP_UI_InvalidateReg(void)
+{
+    /* 仅清除“就绪可上报”标志，不做任何后台重连/硬复位 */
+    g_esp_ready = 0;
+    g_ui_reg_ok = 0;
+    ESP_Log("[UI] Registration expired, please click REG again.\r\n");
+}
+
+/* 从 ESP_Init 抽取的“进入可用 AT 模式”最小流程 */
+static bool ESP_UI_PrepareAtMode(void)
+{
+    /* 进 AT 前清场 */
+    g_uart2_at_mode = 1;
+    ESP_ForceStop_DMA();
+    ESP_Clear_Error_Flags();
+
+    /* 确保 RST 拉高 */
+#ifdef ESP8266_RST_Pin
+    HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_SET);
+#endif
+
+    /* 先快速探测：若本来就在命令模式，别无谓做 +++（避免大量“OK超时”假象） */
+    ESP_Uart2_Drain(60);
+    for (int k = 0; k < 2; k++)
+    {
+        if (ESP_Send_Cmd("AT\r\n", "OK", 300))
+        {
+            return true;
+        }
+        ESP_RtosYield();
+    }
+
+    /* 如果连续 AT 都“完全没回显”，优先判定为模组未就绪/串口状态机异常，直接硬复位比 +++ 更靠谱 */
+    if (esp_rx_buf[0] == 0)
+    {
+        ESP_Log("[ESP] UI: AT no response, hard reset and retry...\r\n");
+        ESP_HardReset();
+        ESP_Uart2_Drain(200);
+        for (int k = 0; k < 3; k++)
+        {
+            if (ESP_Send_Cmd("AT\r\n", "OK", 1000))
+            {
+                return true;
+            }
+            ESP_RtosYield();
+        }
+    }
+
+    /* 可能在透传：再严格退出一次（带 guard time） */
+    ESP_Log("[ESP] UI:尝试退出透传...\r\n");
+    if (ESP_Exit_Transparent_Mode_Strict(2000))
+    {
+        ESP_Uart2_Drain(80);
+        if (ESP_Send_Cmd("AT\r\n", "OK", 800))
+        {
+            return true;
+        }
+    }
+
+    for (int k = 0; k < 3; k++)
+    {
+        if (ESP_Send_Cmd("AT\r\n", "OK", 800))
+        {
+            return true;
+        }
+        (void)ESP_Exit_Transparent_Mode_Strict(2000);
+        ESP_Uart2_Drain(120);
+    }
+
+    /* AT 无回显：硬复位一次 */
+    ESP_Log("[ESP] UI: AT无回显,执行硬复位...\r\n");
+    ESP_HardReset();
+    ESP_ForceStop_DMA();
+    if (!ESP_Send_Cmd("AT\r\n", "OK", 1500))
+    {
+			ESP_Log("[ESP] UI: 致命:硬复位后仍无法进入 AT\r\n");
+        return false;
+    }
+    return true;
+}
+
+static bool ESP_UI_IsWifiConnected(void)
+{
+    if (!ESP_Send_Cmd_Any("AT+CWJAP?\r\n", "+CWJAP:", "No AP", 1500))
+    {
+        return false;
+    }
+    return (strstr((char *)esp_rx_buf, "+CWJAP:") != NULL);
+}
+
+static bool ESP_UI_IsTcpConnected(void)
+{
+    /* 专用解析：必须读到 STATUS:x 才判定，避免先匹配到 OK 就返回导致误判 */
+    ESP_Clear_Error_Flags();
+    memset(esp_rx_buf, 0, sizeof(esp_rx_buf));
+
+    if (HAL_UART_Transmit(&huart2, (uint8_t *)"AT+CIPSTATUS\r\n", 14, 200) != HAL_OK)
+    {
+        (void)HAL_UART_Abort(&huart2);
+        ESP_Clear_Error_Flags();
+        (void)HAL_UART_Transmit(&huart2, (uint8_t *)"AT+CIPSTATUS\r\n", 14, 400);
+    }
+
+    uint32_t start = HAL_GetTick();
+    uint16_t idx = 0;
+    while ((HAL_GetTick() - start) < 1500U)
+    {
+        uint8_t ch;
+        if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
+        {
+            if (idx < sizeof(esp_rx_buf) - 1)
+            {
+                esp_rx_buf[idx++] = ch;
+                esp_rx_buf[idx] = 0;
+            }
+            /* 读到 STATUS: 就继续收一小段，确保把数字收全 */
+            if (strstr((char *)esp_rx_buf, "STATUS:") != NULL)
+            {
+                /* 再多等最多 150ms 收齐 */
+                uint32_t t2 = HAL_GetTick();
+                while ((HAL_GetTick() - t2) < 150U)
+                {
+                    if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
+                    {
+                        if (idx < sizeof(esp_rx_buf) - 1)
+                        {
+                            esp_rx_buf[idx++] = ch;
+                            esp_rx_buf[idx] = 0;
+                        }
+                    }
+                    else
+                    {
+                        ESP_RtosYield();
+                    }
+                }
+                break;
+            }
+        }
+        else
+        {
+            ESP_RtosYield();
+        }
+    }
+
+    char *p = strstr((char *)esp_rx_buf, "STATUS:");
+    if (!p)
+    {
+#if (ESP_DEBUG)
+        ESP_Log("[ESP] CIPSTATUS parse fail (no STATUS)\r\n");
+        ESP_Log_RxBuf("CIPSTATUS");
+#endif
+        return false;
+    }
+    int st = -1;
+    /* 兼容 "STATUS:3" 或 "STATUS: 3" */
+    p += 7;
+    while (*p == ' ' || *p == '\r' || *p == '\n') p++;
+    if (*p >= '0' && *p <= '9')
+        st = *p - '0';
+
+    /* ESP AT: STATUS:3 表示已建立 TCP 连接 */
+    return (st == 3);
+}
+
+static bool ESP_UI_DoWiFi(void)
+{
+    char cmd_buf[128];
+
+    ESP_LoadConfig();
+    ESP_Log("[UI] Executing WIFI...\r\n");
+
+    /* 用户要求：每次点击 WiFi 连接，都先硬件复位一次（保证状态干净） */
+    g_esp_ready = 0;
+    g_ui_wifi_ok = 0;
+    g_ui_tcp_ok = 0;
+    g_ui_reg_ok = 0;
+    ESP_HardReset();
+
+    if (!ESP_UI_PrepareAtMode())
+        return false;
+
+    int retry_count = 0;
+    while (!ESP_Send_Cmd("ATE0\r\n", "OK", 500))
+    {
+        ESP_Log("[ESP] UI: ATE0 失败,重试...\r\n");
+        ESP_Clear_Error_Flags();
+        HAL_Delay(500);
+        retry_count++;
+        if (retry_count > 5)
+            break;
+    }
+
+    ESP_Send_Cmd("AT+CWMODE=1\r\n", "OK", 1000);
+    (void)ESP_Send_Cmd_Any("AT+CWQAP\r\n", "OK", "ERROR", 1000); /* 断开旧 AP（若无连接返回 ERROR 也可忽略） */
+
+    sprintf(cmd_buf, "AT+CWJAP=\"%s\",\"%s\"\r\n", g_sys_cfg.wifi_ssid, g_sys_cfg.wifi_password);
+    if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000))
+    {
+        /* 第一次失败：硬复位一次再试（比“无限重试”更可控） */
+        ESP_Log("[ESP] WiFi 连接失败,硬复位后重试...\r\n");
+        ESP_HardReset();
+        if (!ESP_UI_PrepareAtMode())
+            return false;
+        ESP_Send_Cmd("ATE0\r\n", "OK", 800);
+        ESP_Send_Cmd("AT+CWMODE=1\r\n", "OK", 1000);
+        if (!ESP_Send_Cmd(cmd_buf, "GOT IP", 20000))
+        {
+            ESP_Log("[ESP] WiFi 连接失败。\r\n");
+            ESP_Log_RxBuf("WIFI_FAIL");
+            g_ui_wifi_ok = 0;
+            return false;
+        }
+    }
+
+    ESP_Log("[ESP] WiFi 连接成功（已获取 IP）。\r\n");
+    HAL_Delay(1200);
+    ESP_Uart2_Drain(200);
+    (void)ESP_Send_Cmd("AT+CIFSR\r\n", "STAIP", 3000);
+    ESP_Log_RxBuf("CIFSR");
+    g_ui_wifi_ok = 1;
+    return true;
+}
+
+static bool ESP_UI_DoTCP(void)
+{
+    char cmd_buf[128];
+    ESP_LoadConfig();
+    ESP_Log("[UI] Executing TCP...\r\n");
+
+    if (!ESP_UI_PrepareAtMode())
+        return false;
+
+    if (!ESP_UI_IsWifiConnected())
+    {
+			ESP_Log("[ESP] TCP 前置条件失败:WiFi 未连接\r\n");
+        g_ui_tcp_ok = 0;
+        return false;
+    }
+
+    if (ESP_UI_IsTcpConnected())
+    {
+        ESP_Log("[ESP] TCP 已连接,跳过重连。\r\n");
+        g_ui_tcp_ok = 1;
+        return true;
+    }
+
+    (void)ESP_Send_Cmd_Any("AT+CIPCLOSE\r\n", "OK", "ERROR", 500);
+    sprintf(cmd_buf, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", g_sys_cfg.server_ip, g_sys_cfg.server_port);
+
+    uint8_t tcp_ok = 0;
+    for (int k = 0; k < 3; k++)
+    {
+        if (ESP_Send_Cmd(cmd_buf, "CONNECT", 10000))
+        {
+            tcp_ok = 1;
+            break;
+        }
+        if (strstr((char *)esp_rx_buf, "ALREADY") != NULL)
+        {
+            tcp_ok = 1;
+            break;
+        }
+        if (ESP_RxBusyDetected())
+        {
+            ESP_Log("[ESP] CIPSTART busy，等待后重试...\r\n");
+            HAL_Delay(800);
+            continue;
+        }
+        ESP_Log("[ESP] CIPSTART 失败,准备重试...\r\n");
+        HAL_Delay(800);
+    }
+
+    if (!tcp_ok)
+    {
+        ESP_Log("[ESP] TCP 连接失败。\r\n");
+        ESP_Log_RxBuf("TCP_FAIL");
+        g_ui_tcp_ok = 0;
+        return false;
+    }
+    ESP_Log("[ESP] TCP 连接成功（CONNECT）。\r\n");
+    (void)ESP_Send_Cmd_Any("AT+CIPSTATUS\r\n", "STATUS:", "OK", 1000);
+    ESP_Log_RxBuf("CIPSTATUS");
+    g_ui_tcp_ok = 1;
+    return true;
+}
+
+static bool ESP_UI_DoRegister(void)
+{
+    ESP_Log("[UI] Executing REG...\r\n");
+
+    if (!ESP_UI_PrepareAtMode())
+        return false;
+
+    if (!ESP_UI_IsTcpConnected())
+    {
+			ESP_Log("[ESP] 注册前置条件失败:TCP 未连接\r\n");
+        g_ui_reg_ok = 0;
+        return false;
+    }
+
+    ESP_Send_Cmd("AT+CIPMODE=1\r\n", "OK", 1000);
+    if (!ESP_Send_Cmd("AT+CIPSEND\r\n", ">", 2000))
+    {
+        ESP_Log("[ESP] 进入透传发送失败（未出现 > ）\r\n");
+        g_ui_reg_ok = 0;
+        return false;
+    }
+    HAL_Delay(500);
+    ESP_Register();
+
+    /* 关键：进入“可上报”前初始化 4 通道与 FFT，否则后端只会看到 1 个通道 */
+    ESP_Init_Channels_And_DSP();
+
+    /* 注册完成后，切换到数据监听模式 */
+    g_esp_ready = 1;
+    g_uart2_at_mode = 0;
+    ESP_StreamRx_Start();
+    ESP_Log("[ESP] 注册完成,链路就绪.\r\n");
+    g_ui_reg_ok = 1;
+    return true;
+}
+
+static void ESP_UI_ToggleReport(void)
+{
+    /* 只允许在链路就绪后开启上报，避免“未注册就上报”造成大量超时 */
+    if (!g_report_enabled)
+    {
+        if (!g_esp_ready)
+        {
+            ESP_Log("[UI] Report denied: link not ready (need REG first)\r\n");
+            return;
+        }
+        g_report_enabled = 1U;
+        ESP_Log("[UI] Started sensor data upload loop.\r\n");
+    }
+    else
+    {
+        g_report_enabled = 0U;
+        ESP_Log("[UI] Data upload stopped.\r\n");
+    }
+}
+
+static void ESP_UI_AutoConnect(void)
+{
+    ESP_Log("[UI] Auto sequence started...\r\n");
+    bool ok_wifi = ESP_UI_DoWiFi();
+    esp_ui_step_done(ESP_UI_CMD_WIFI, ok_wifi);
+    if (!ok_wifi)
+        return;
+
+    bool ok_tcp = ESP_UI_DoTCP();
+    esp_ui_step_done(ESP_UI_CMD_TCP, ok_tcp);
+    if (!ok_tcp)
+        return;
+
+    bool ok_reg = ESP_UI_DoRegister();
+    esp_ui_step_done(ESP_UI_CMD_REG, ok_reg);
+    if (!ok_reg)
+        return;
+
+    if (!g_report_enabled)
+    {
+        ESP_UI_ToggleReport();
+    }
+    esp_ui_step_done(ESP_UI_CMD_REPORT_TOGGLE, true);
+}
+
+void ESP_UI_TaskPoll(void)
+{
+    if (!g_esp_ui_q)
+        return;
+
+    uint8_t c = 0xFF;
+    /* 若 UI 连续点击导致队列堆积：只处理最后一条（防止“过期命令”触发超时） */
+    uint32_t got = 0;
+    while (osMessageQueueGet(g_esp_ui_q, &c, NULL, 0U) == osOK)
+    {
+        got++;
+        /* 继续取，直到队列清空，最后一个 c 即“最新命令” */
+    }
+    if (!got)
+        return;
+
+    {
+        esp_ui_cmd_t cmd = (esp_ui_cmd_t)c;
+        switch (cmd)
+        {
+        case ESP_UI_CMD_WIFI:
+        {
+            bool ok = ESP_UI_DoWiFi();
+            esp_ui_step_done(cmd, ok);
+        }
+        break;
+        case ESP_UI_CMD_TCP:
+        {
+            bool ok = ESP_UI_DoTCP();
+            esp_ui_step_done(cmd, ok);
+        }
+        break;
+        case ESP_UI_CMD_REG:
+        {
+            bool ok = ESP_UI_DoRegister();
+            esp_ui_step_done(cmd, ok);
+        }
+        break;
+        case ESP_UI_CMD_REPORT_TOGGLE:
+        {
+            bool before = ESP_UI_IsReporting();
+            ESP_UI_ToggleReport();
+            bool after = ESP_UI_IsReporting();
+            /* 若由于链路未就绪导致拒绝开启，上报状态不会变化，则认为失败 */
+            bool ok = (before != after) || (!after); /* 允许“停止上报”总是成功 */
+            esp_ui_step_done(cmd, ok);
+        }
+            break;
+        case ESP_UI_CMD_AUTO_CONNECT:
+            ESP_UI_AutoConnect();
+            break;
+        default:
+            break;
+        }
+    }
 }

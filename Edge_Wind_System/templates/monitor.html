@@ -936,19 +936,16 @@
             // 清除URL参数，防止刷新时重复选择
             window.history.replaceState({}, document.title, '/monitor');
             
-            // 滚动到边缘节点在侧边栏中的位置（只在首次自动聚焦时执行，避免重复滚动导致跳动）
-            if (!autoFocusHandled) {
-                setTimeout(() => {
-                    const el = document.querySelector(`[data-node-id="${targetNodeId}"]`);
-                    if (el) {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        // 高亮显示选中的边缘节点（通过active类）
-                        const nodeListItems = document.querySelectorAll('#nodeList .list-group-item');
-                        nodeListItems.forEach(item => item.classList.remove('active'));
-                        el.classList.add('active');
-                    }
-                }, 500);
-            }
+            // 滚动到边缘节点在侧边栏中的位置
+            // 注意：不要用 querySelector(`[data-node-id="${id}"]`) 直接拼接，
+            // 当 node_id 含引号等特殊字符时会导致选择器语法错误，从而“选不中”。
+            setTimeout(() => {
+                const nodeList = document.getElementById('nodeList');
+                const el = findNodeListItem(nodeList, targetNodeId);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, 300);
             
             console.log(`✅ 已自动聚焦到边缘节点: ${targetNodeId}`);
         } else if (focusType && !targetNodeId) {

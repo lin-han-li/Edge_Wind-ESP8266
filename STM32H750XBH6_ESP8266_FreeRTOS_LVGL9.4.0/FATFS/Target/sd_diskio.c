@@ -65,6 +65,9 @@ See BSP_SD_ErrorCallback() and BSP_SD_AbortCallback() below
  * BSP_SD_Init() elsewhere in the application.
  */
 /* USER CODE BEGIN disableSDInit */
+/* 重要：对齐 PN_TI_LVGL_SD 的稳定方案：让 SD_Driver 自己在 disk_initialize 内部调用 BSP_SD_Init。
+ * 这样 UI/资产同步层都只需要 disk_initialize/f_mount，不再自己反复 BSP_SD_Init，避免状态机紊乱。
+ */
 /* #define DISABLE_SD_INIT */
 /* USER CODE END disableSDInit */
 

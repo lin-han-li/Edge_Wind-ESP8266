@@ -40,6 +40,7 @@
 #include "EdgeWind_UI/edgewind_ui.h"
 #include "esp8266.h"
 #include "qspi_w25q256.h"
+#include "GUI-Guider_Runtime/gui_assets_sync.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -102,6 +103,11 @@ void HAL_Delay(uint32_t Delay)
  */
 #ifndef W25Q256_SELFTEST_USE_MEMORY_MAPPED
 #define W25Q256_SELFTEST_USE_MEMORY_MAPPED 0
+#endif
+
+/* 启动阶段同步资源时，暂时挂起 ESP 任务，避免文件系统/总线竞争 */
+#ifndef EW_SUSPEND_ESP_DURING_SYNC
+#define EW_SUSPEND_ESP_DURING_SYNC 1
 #endif
 
 #define W25Q256_SELFTEST_ADDR   (0x1FF0000u) /* 32MB Flash 末尾附近，避开常用数据区 */
@@ -290,7 +296,7 @@ const osThreadAttr_t LED_attributes = {
 osThreadId_t MainHandle;
 const osThreadAttr_t Main_attributes = {
   .name = "Main",
-  .stack_size = 30000 * 4,
+  .stack_size = 8192 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
 /* Definitions for ESP8266 */
@@ -391,6 +397,8 @@ void LVGL_Task(void *argument)
 {
   /* USER CODE BEGIN LVGL_Task */
   uint32_t time;
+  UBaseType_t min_hw = (UBaseType_t)0xFFFFFFFFu;
+  TickType_t last_log = 0;
   //  // LVGL图形库初始化三件套
   lv_init();            // 初始化LVGL核心库（内存管理、内部变量等）
   lv_port_disp_init();  // 初始化显示驱动接口（配置帧缓冲区、注册刷新回调）
@@ -413,6 +421,19 @@ void LVGL_Task(void *argument)
 
     osMutexRelease(mutex_id);
     /* === 临界区结束 === */
+
+    /* 低频监测 LVGL 线程栈水位（观察是否逼近溢出） */
+    TickType_t now = xTaskGetTickCount();
+    if ((now - last_log) > pdMS_TO_TICKS(2000)) {
+      UBaseType_t hw = uxTaskGetStackHighWaterMark(NULL);
+      if (hw < min_hw) {
+        min_hw = hw;
+        printf("[LVGL] stack HW=%lu words, freeHeap=%lu\r\n",
+               (unsigned long)hw,
+               (unsigned long)xPortGetFreeHeapSize());
+      }
+      last_log = now;
+    }
 
     //    /* 周期延时（关键性能参数）*/
     osDelay(LV_DEF_REFR_PERIOD + 1); // 保持屏幕刷新率稳定（典型值30ms≈33FPS）
@@ -458,12 +479,48 @@ void Main_Task(void *argument)
 {
   /* USER CODE BEGIN Main_Task */
 
+#ifdef EW_SUSPEND_ESP_DURING_SYNC
+  if (ESP8266Handle) {
+    osThreadSuspend(ESP8266Handle);
+    printf("[QSPI_FS] suspended ESP task during sync\r\n");
+  }
+#endif
+
+  if (mutex_id) {
+    osMutexAcquire(mutex_id, osWaitForever);
+    printf("[QSPI_FS] locked LVGL mutex during sync\r\n");
+  }
+
 #if W25Q256_SELFTEST_ENABLE
   osDelay(200); /* 让系统先跑起来，避免和启动阶段串口输出打架 */
   (void)W25Q256_SelfTest_Small();
 #if (W25Q256_SELFTEST_LEVEL >= 2)
   (void)W25Q256_SelfTest_CrossPageAndSector();
 #endif
+#endif
+
+  uint32_t t0 = HAL_GetTick();
+  FRESULT fr_qspi = QSPIFS_MountOrMkfs();
+  uint32_t t1 = HAL_GetTick();
+  printf("[QSPI_FS] QSPIFS_MountOrMkfs=%d, dt=%lu ms\r\n", (int)fr_qspi, (unsigned long)(t1 - t0));
+
+  FRESULT fr_sync = GUI_Assets_SyncFromSD();
+  uint32_t t2 = HAL_GetTick();
+  printf("[QSPI_FS] GUI_Assets_SyncFromSD=%d, dt=%lu ms\r\n", (int)fr_sync, (unsigned long)(t2 - t1));
+  printf("[QSPI_FS] Main stack HW=%lu words, freeHeap=%lu bytes\r\n",
+         (unsigned long)uxTaskGetStackHighWaterMark(NULL),
+         (unsigned long)xPortGetFreeHeapSize());
+
+  if (mutex_id) {
+    osMutexRelease(mutex_id);
+    printf("[QSPI_FS] unlocked LVGL mutex\r\n");
+  }
+
+#ifdef EW_SUSPEND_ESP_DURING_SYNC
+  if (ESP8266Handle) {
+    osThreadResume(ESP8266Handle);
+    printf("[QSPI_FS] resumed ESP task\r\n");
+  }
 #endif
 
   /* Infinite loop */
@@ -490,7 +547,8 @@ void ESP8266_Task(void *argument)
     osThreadSetPriority(self, osPriorityAboveNormal);
   }
   ESP_Console_Init();
-  ESP_Init(); // 这会阻塞几秒钟进行连接
+  /* 不再开机自启动连接：由 DeviceConnect 界面按钮驱动 */
+  ESP_UI_TaskInit();
   if (self)
   {
     osThreadSetPriority(self, osPriorityNormal);
@@ -498,9 +556,14 @@ void ESP8266_Task(void *argument)
   /* Infinite loop */
   for(;;)
   {
+    ESP_UI_TaskPoll();
     ESP_Console_Poll();
-    ESP_Update_Data_And_FFT();
-    ESP_Post_Data();
+    /* 上报仅在 UI 开启后执行，避免开机后台自动联网 */
+    if (ESP_UI_IsReporting())
+    {
+      ESP_Update_Data_And_FFT();
+      ESP_Post_Data();
+    }
     osDelay(1);
   }
   /* USER CODE END ESP8266_Task */

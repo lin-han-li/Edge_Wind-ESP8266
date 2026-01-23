@@ -45,6 +45,8 @@ void MX_SDMMC1_SD_Init(void)
   hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
   hsd1.Init.ClockDiv = 0;
   /* USER CODE BEGIN SDMMC1_Init 2 */
+  /* CubeMX 可能会重置 ClockDiv；这里在原生 USER CODE 区域内强制对齐 PN_TI_LVGL_SD 的稳定配置 */
+  hsd1.Init.ClockDiv = 0;
 
   /* USER CODE END SDMMC1_Init 2 */
 
@@ -102,6 +104,19 @@ void HAL_SD_MspInit(SD_HandleTypeDef* sdHandle)
     HAL_NVIC_SetPriority(SDMMC1_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(SDMMC1_IRQn);
   /* USER CODE BEGIN SDMMC1_MspInit 1 */
+    /* CubeMX 生成的上拉配置可能与旧工程不同，且会被反复覆盖；
+     * 这里在原生 USER CODE 区域内“二次初始化 GPIO”为 NOPULL，保持与 PN_TI_LVGL_SD 一致。
+     * 注意：重复 HAL_GPIO_Init 会覆盖同一组引脚的 Pull 配置。
+     */
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF12_SDIO1;
+    GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | GPIO_PIN_12;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_2;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /* USER CODE END SDMMC1_MspInit 1 */
   }

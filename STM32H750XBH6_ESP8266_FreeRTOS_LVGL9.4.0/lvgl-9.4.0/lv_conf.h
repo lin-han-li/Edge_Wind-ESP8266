@@ -507,11 +507,11 @@
  * If size is not set to 0, the decoder will fail to decode when the cache is full.
  * If size is 0, the cache function is not enabled and the decoded memory will be
  * released immediately after use. */
-#define LV_CACHE_DEF_SIZE       0
+#define LV_CACHE_DEF_SIZE       (32 * 1024)
 
 /** Default number of image header cache entries. The cache is used to store the headers of images
  * The main logic is like `LV_CACHE_DEF_SIZE` but for image headers. */
-#define LV_IMAGE_HEADER_CACHE_DEF_CNT 0
+#define LV_IMAGE_HEADER_CACHE_DEF_CNT 8
 
 /** Number of stops allowed per gradient. Increase this to allow more stops.
  * This adds (sizeof(lv_color_t) + 1) bytes per additional stop. */
@@ -526,7 +526,7 @@
 #define LV_COLOR_MIX_ROUND_OFS  0
 
 /** Add 2 x 32-bit variables to each `lv_obj_t` to speed up getting style properties */
-#define LV_OBJ_STYLE_CACHE      0
+#define LV_OBJ_STYLE_CACHE      1
 
 /** Add `id` field to `lv_obj_t` */
 #define LV_USE_OBJ_ID           0
@@ -665,7 +665,7 @@
 #define LV_FONT_FMT_TXT_LARGE 0
 
 /** Enables/disables support for compressed fonts. */
-#define LV_USE_FONT_COMPRESSED 0
+#define LV_USE_FONT_COMPRESSED 1  /* 启用字体压缩支持，解决 binfont 渲染问题 */
 
 /** Enable drawing placeholders when glyph dsc is not found. */
 #define LV_USE_FONT_PLACEHOLDER 1
@@ -896,17 +896,17 @@
 #endif
 
 /** API for FATFS (needs to be added separately). Uses f_open, f_read, etc. */
-#define LV_USE_FS_FATFS 0
+#define LV_USE_FS_FATFS 1
 #if LV_USE_FS_FATFS
-    #define LV_FS_FATFS_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
-    #define LV_FS_FATFS_PATH ""         /**< Set the working directory. File/directory paths will be appended to it. */
-    #define LV_FS_FATFS_CACHE_SIZE 0    /**< >0 to cache this number of bytes in lv_fs_read() */
+    #define LV_FS_FATFS_LETTER 'Q'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
+    #define LV_FS_FATFS_PATH "1:"      /**< Set the working directory. File/directory paths will be appended to it. */
+    #define LV_FS_FATFS_CACHE_SIZE 0   /**< >0 to cache this number of bytes in lv_fs_read() */
 #endif
 
 /** API for memory-mapped file access. */
-#define LV_USE_FS_MEMFS 0
+#define LV_USE_FS_MEMFS 1
 #if LV_USE_FS_MEMFS
-    #define LV_FS_MEMFS_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
+    #define LV_FS_MEMFS_LETTER 'M'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
 #endif
 
 /** API for LittleFs. */
@@ -1160,17 +1160,17 @@
 
 /** 1: Enable Pinyin input method
  * - Requires: lv_keyboard */
-#define LV_USE_IME_PINYIN 0
+#define LV_USE_IME_PINYIN 1
 #if LV_USE_IME_PINYIN
     /** 1: Use default thesaurus.
      * @note  If you do not use the default thesaurus, be sure to use `lv_ime_pinyin` after setting the thesaurus. */
-    #define LV_IME_PINYIN_USE_DEFAULT_DICT 1
+    #define LV_IME_PINYIN_USE_DEFAULT_DICT 0
     /** Set maximum number of candidate panels that can be displayed.
      * @note  This needs to be adjusted according to size of screen. */
     #define LV_IME_PINYIN_CAND_TEXT_NUM 6
 
     /** Use 9-key input (k9). */
-    #define LV_IME_PINYIN_USE_K9_MODE       1
+    #define LV_IME_PINYIN_USE_K9_MODE       0
     #if LV_IME_PINYIN_USE_K9_MODE == 1
         #define LV_IME_PINYIN_K9_CAND_TEXT_NUM 3
     #endif /*LV_IME_PINYIN_USE_K9_MODE*/

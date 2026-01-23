@@ -12,17 +12,8 @@
 extern "C" {
 #endif
 
-#include "lvgl.h"
 #include <stdbool.h>
 #include <stdint.h>
-
-/*******************************************************************************
- * 包含子模块
- ******************************************************************************/
-
-#include "edgewind_theme.h"
-#include "screens/scr_boot_anim.h"
-#include "screens/scr_home.h"
 
 /*******************************************************************************
  * 函数声明
@@ -45,6 +36,12 @@ void edgewind_ui_refresh(void);
  * @return true 动画已完成
  */
 bool edgewind_ui_boot_finished(void);
+
+/**
+ * @brief “进入系统”按钮点击入口（弱符号）
+ * @note  在业务代码中实现同名函数即可接管。
+ */
+void edgewind_ui_on_enter_system(void);
 
 #ifdef __cplusplus
 }

@@ -36,6 +36,7 @@ extern "C" {
 #include "src/misc/lv_iter.h"
 #include "src/misc/lv_circle_buf.h"
 #include "src/misc/lv_tree.h"
+#include "src/libs/fsdrv/lv_fsdrv.h"
 
 #include "src/osal/lv_os.h"
 

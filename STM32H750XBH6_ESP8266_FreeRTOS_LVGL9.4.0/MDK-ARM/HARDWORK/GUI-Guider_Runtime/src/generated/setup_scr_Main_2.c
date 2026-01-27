@@ -84,7 +84,7 @@ void setup_scr_Main_2(lv_ui *ui)
     lv_obj_set_grid_dsc_array(ui->Main_2_cont_grid, col_dsc, row_dsc);
 
     create_tile(ui->Main_2_cont_grid, &ui->Main_2_tile_1, &ui->Main_2_img_1, &ui->Main_2_lbl_1,
-                "Q:/gui/icon_07_param_RGB565A8_100x100.bin", "参数配置", 0, 0);
+                "Q:/gui/icon_07_param_RGB565A8_100x100.bin", "通讯参数配置", 0, 0);
     create_tile(ui->Main_2_cont_grid, &ui->Main_2_tile_2, &ui->Main_2_img_2, &ui->Main_2_lbl_2,
                 "Q:/gui/icon_08_net_RGB565A8_100x100.bin", "网络设置", 1, 0);
     create_tile(ui->Main_2_cont_grid, &ui->Main_2_tile_3, &ui->Main_2_img_3, &ui->Main_2_lbl_3,

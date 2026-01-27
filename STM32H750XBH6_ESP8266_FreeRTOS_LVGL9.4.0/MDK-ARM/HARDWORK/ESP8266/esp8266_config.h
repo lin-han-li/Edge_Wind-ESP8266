@@ -26,3 +26,4 @@
 #define NODE_LOCATION "Lab_Test"        // 设备部署位置
 
 #endif /* __ESP8266_CONFIG_H */
+

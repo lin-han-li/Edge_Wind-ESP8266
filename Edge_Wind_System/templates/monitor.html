@@ -1538,8 +1538,12 @@
 
     let _chartsUpdateScheduled = false;
     let _lastChartsUpdateTs = 0;
-    const CHARTS_MAX_HZ = 10; // 最多 10Hz 刷新图表（足够平滑；防止高频推送把页面拖死）
+    const CHARTS_MAX_HZ = 0; // 0=不节流，全部更新（发多少显示多少）
     function scheduleChartsUpdate() {
+        if (CHARTS_MAX_HZ <= 0) {
+            if (typeof updateCharts === 'function') updateCharts();
+            return;
+        }
         if (_chartsUpdateScheduled) return;
         _chartsUpdateScheduled = true;
         const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -1930,9 +1934,7 @@
             });
         }
         
-        // Global Socket Listener - 优化版本：使用requestAnimationFrame批处理更新
-        let pendingUpdate = null;
-        let rafScheduled = false;
+        // Global Socket Listener - 全量更新：发多少显示多少
         
         socket.on('monitor_update', (msg) => {
             // 性能统计
@@ -2017,36 +2019,23 @@
                 nodeFaultHistory[msg.node_id] = currentCode;
                 // ------------------------------------------
 
-                // 3. Update Main View - 使用requestAnimationFrame批处理，减少重绘
+                // 3. Update Main View - 全量更新（不合并批处理）
                 if (currentNodeId && msg.node_id === currentNodeId) {
                     const d = msg.data;
                     
                     // 缓存最新数据包
                     lastCachedData = d;
-                    
-                    // 优化：使用requestAnimationFrame批处理更新，避免频繁重绘
-                    pendingUpdate = d;
-                    if (!rafScheduled) {
-                        rafScheduled = true;
-                        const renderStart = performance.now();
-                        requestAnimationFrame(() => {
-                            if (pendingUpdate) {
-                                renderDashboard(pendingUpdate);
-                                
-                                // 记录渲染时间
-                                const renderTime = performance.now() - renderStart;
-                                perfStats.renderTimeTotal += renderTime;
-                                perfStats.renderCount++;
-                                // 保持最近100次的平均值
-                                if (perfStats.renderCount > 100) {
-                                    perfStats.renderTimeTotal *= 0.99;
-                                    perfStats.renderCount *= 0.99;
-                                }
-                                
-                                pendingUpdate = null;
-                            }
-                            rafScheduled = false;
-                        });
+
+                    const renderStart = performance.now();
+                    renderDashboard(d);
+                    // 记录渲染时间
+                    const renderTime = performance.now() - renderStart;
+                    perfStats.renderTimeTotal += renderTime;
+                    perfStats.renderCount++;
+                    // 保持最近100次的平均值
+                    if (perfStats.renderCount > 100) {
+                        perfStats.renderTimeTotal *= 0.99;
+                        perfStats.renderCount *= 0.99;
                     }
                 } else if (!currentNodeId) {
                     // 自动选择第一个活动边缘节点
@@ -2603,7 +2592,7 @@
         
         // 物理常数（与后端一致）
         const FREQ_RES = 5.0;  // 频率分辨率：5 Hz/bin
-        const MAX_DISPLAY_BINS = 110;  // 显示到550Hz（110 * 5Hz = 550Hz）
+        const MAX_DISPLAY_BINS = 0;  // 0=不限制，显示全部
         
         // 如果后端提供了FFT数据，直接使用
         if (fft_spectrum.length > 0) {
@@ -2615,7 +2604,9 @@
             // Bin 10 = 50Hz (E01故障) ← 关键！
             // Bin 30 = 150Hz (谐波)
             // 显示前110个bin（0-550Hz）
-            const displayLength = Math.min(fft_spectrum.length, MAX_DISPLAY_BINS);
+            const displayLength = MAX_DISPLAY_BINS > 0
+                ? Math.min(fft_spectrum.length, MAX_DISPLAY_BINS)
+                : fft_spectrum.length;
             for (let i = 0; i < displayLength; i++) {
                 const freq = i * FREQ_RES;  // 精确的5Hz分辨率
                 frequencies.push(freq);
@@ -2672,12 +2663,13 @@
             }
             
             // 频域图改为 value 轴 + [频率, 幅值] 数据对（保证缩放/缩小/拖拽逻辑与时域一致）
-            const fftSeriesData = frequencies.map((f, i) => [f, fftData[i]]);
+            // 不做降采样，仅将 NaN/Inf 替换为 0，确保点数不变
+            const sanitized = fftData.map(val => (Number.isFinite(val) ? val : 0));
+            const fftSeriesData = frequencies.map((f, i) => [f, sanitized[i]]);
             
             // 计算Y轴最大值（动态调整，留10%余量）
             // 确保正确处理空数组或无效数据
-            const validData = fftData.filter(val => !isNaN(val) && isFinite(val));
-            const maxVal = validData.length > 0 ? Math.max(...validData) : 0;
+            const maxVal = sanitized.length > 0 ? Math.max(...sanitized) : 0;
             const yAxisMax = maxVal > 0 ? maxVal * 1.1 : 50;
 
             // 显式提供“全量范围”，保证滚轮缩小一定能回到全范围（与时域一致）

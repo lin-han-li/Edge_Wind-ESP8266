@@ -1,13 +1,27 @@
 #include "ADS131A04_EVB.h"
+#include "mcp_myspi.h"
 #include "delay.h"
 #include "main.h"
 #include "stdio.h"
 
-float ADS131A04_value[1000];
-int ADS131A04_flag;
-
+float ADS131A04_value[1024];
+float ADSA_B[4][1024],ADSA_B2[4][1024];
+int CJ_flag=0;
+int ADS131A04_flag=0,ADS131A04_flag2=0;
+int number=0,number2=0;
 float ADS131A04_Buf[4] = {0};
 int AD_i = 0;
+
+void START()
+{
+    number=0;		
+		ADS131A04_flag=0;
+}
+void START2()
+{
+    number2=0;		
+		ADS131A04_flag2=0;
+}
 /*
 
 ├── GPIO_Init,SPI_DMA_Init (cubemx)
@@ -237,7 +251,7 @@ unsigned long Read_ADS131A0X_Value(float ADS[]) // 读取ADC
 
 	ADS[0] = DataFormatting(volt0.voltage, 2.5f * 2.0f, 1);
 	ADS[1] = DataFormatting(volt1.voltage, 2.5f * 2.0f, 1);
-	ADS[2] = DataFormatting(volt2.voltage, 2.5f * 2.0f, 1);
+	ADS[2] = DataFormatting(volt2.voltage, 2.5f * 2.0f, 1)*465.95/473.20;
 	ADS[3] = DataFormatting(volt3.voltage, 2.5f * 2.0f, 1);
 	return 1;
 }
@@ -369,14 +383,14 @@ ADS_res
 ADS131A04_Power_Up(void)
 {
 	uint32_t rev = 0;
-	rev = ADS131A04_Write_Command(RESET); // 重置
+	rev = ADS131A04_Write_Command(ADS131A04_RESET_COMMAND); // 重置
 	while (rev != 0xff040000)
 	{
 		printf("\n\r上电重置接收到的回复:%x\n\r", rev);
-		rev = ADS131A04_Write_Command(RESET); // 接收READY信号
+		rev = ADS131A04_Write_Command(ADS131A04_RESET_COMMAND); // 接收READY信号
 	}
 	printf("\n\r已接收到READY\n\r");
-	rev = ADS131A04_Write_Command(UNLOCK); // 解锁
+	rev = ADS131A04_Write_Command(ADS131A04_UNLOCK_COMMAND); // 解锁
 	printf("\n\rUNLOCK接收到的回复:%x\n\r", rev);
 	ADS131A04_REF_SET(0, 0); // 设置参考电压
 	rev = ADS131A04_Write_Reg(READ_CMD | A_SYS_CFG, 0);
@@ -391,7 +405,7 @@ ADS131A04_Power_Up(void)
 	// 10kHz采样率
 	rev = ADS131A04_Write_Reg(WRITE_CMD | ADC_ENA, 0X00 | ADC_ALL_ENABLE); // 开启使能
 	printf("\n\r开启使能接收到的回复:%x\n\r", rev);
-	rev = ADS131A04_Write_Command(WAKEUP); // 唤醒
+	rev = ADS131A04_Write_Command(ADS131A04_WAKEUP_COMMAND); // 唤醒
 	printf("\n\rWAKEUP接收到的回复:%x\n\r", rev);
 
 	return ADS_OK;
@@ -435,14 +449,18 @@ double DataFormatting(uint32_t Data, double Vref, uint8_t PGA)
 			设：AD采样的电压为Vin ,AD采样二进制值为X，参考电压为 Vr ,内部集成运放增益为G
 			Vin = ( (Vr) / G ) * ( x / (2^23 -1))
 	*/
-	double ReadVoltage;
-	if (Data & 0x00800000)
+	/* 关键修复：
+	 * ADS131A04 每通道为 24-bit 二补码；SPI 帧里经常是 32-bit word（含状态/填充字节）。
+	 * 在本工程高负载/软 SPI 抖动场景下，最高字节偶尔会被污染，若不屏蔽会导致“特别大的异常值”。 */
+	uint32_t raw24 = Data & 0x00FFFFFFu;
+	int32_t code = (int32_t)raw24;
+	if (raw24 & 0x00800000u)
 	{
-		Data = (~Data) & 0x00FFFFFF;
-		ReadVoltage = -(((double)Data) / 8388607) * ((Vref) / ((double)PGA));
+		/* sign-extend 24-bit to 32-bit */
+		code |= (int32_t)0xFF000000u;
 	}
-	else
-		ReadVoltage = (((double)Data) / 8388607) * ((Vref) / ((double)PGA));
 
-	return (ReadVoltage);
+	/* 注意：分母沿用原工程的 8388607(=2^23-1) */
+	double ReadVoltage = (((double)code) / 8388607.0) * (Vref / (double)PGA);
+	return ReadVoltage;
 }

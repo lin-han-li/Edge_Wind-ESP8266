@@ -53,6 +53,7 @@
 #include <stdio.h>
 
 #include "esp8266.h"
+#include "ADS131A04_EVB.h"
 
 /* USER CODE END Includes */
 
@@ -152,6 +153,7 @@ int main(void)
   MX_TIM16_Init();
   MX_USART2_UART_Init();
   MX_QUADSPI_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   //		Stack_Size      EQU     0x00000400 //
   //		Stack_Size      EQU     0x0000FF00
@@ -160,6 +162,13 @@ int main(void)
   SDRAM_Initialization_Sequence(&hsdram1); //
   LCD_RGB_Init();                          //
   Touch_Init();                            //
+
+  ADS13_PowerOnInit();
+  number = 0;
+  number2 = 0;
+  ADS131A04_flag = 0;
+  ADS131A04_flag2 = 2;
+  HAL_TIM_Base_Start_IT(&htim2);
 
   printf("System Start...\r\n");
 
@@ -319,6 +328,41 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     {
 
     }
+  if (htim->Instance == TIM2)
+  {
+    if (ADS131A04_flag == 0)
+    {
+      Read_ADS131A0X_Value(ADS131A04_Buf);
+      for (uint8_t ch = 0; ch < 4; ch++)
+      {
+        ADSA_B[ch][number] = ADS131A04_Buf[ch];
+      }
+      number++;
+      if (number == 1024)
+      {
+        ADS131A04_flag = 1;
+        ADS131A04_flag2 = 0;
+        number = 0;
+        number2 = 0;
+      }
+    }
+    if (ADS131A04_flag2 == 0)
+    {
+      Read_ADS131A0X_Value(ADS131A04_Buf);
+      for (uint8_t ch = 0; ch < 4; ch++)
+      {
+        ADSA_B2[ch][number2] = ADS131A04_Buf[ch];
+      }
+      number2++;
+      if (number2 == 1024)
+      {
+        ADS131A04_flag2 = 2;
+        ADS131A04_flag = 0;
+        number = 0;
+        number2 = 0;
+      }
+    }
+  }
   /* USER CODE END Callback 1 */
 }
 

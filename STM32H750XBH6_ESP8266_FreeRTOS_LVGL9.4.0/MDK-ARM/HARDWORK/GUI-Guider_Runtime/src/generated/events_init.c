@@ -132,6 +132,22 @@ static void Main_2_tile_3_event_handler (lv_event_t *e)
     }
 }
 
+static void Main_2_tile_1_event_handler (lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    switch (code) {
+    case LV_EVENT_CLICKED:
+    {
+        lv_indev_wait_release(lv_indev_active());
+        ui_load_scr_animation(&guider_ui, &guider_ui.ParamConfig, guider_ui.ParamConfig_del, &guider_ui.Main_2_del,
+                              setup_scr_ParamConfig, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
 static void Main_2_tile_2_event_handler (lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -195,6 +211,7 @@ static void Main_2_dot_3_event_handler(lv_event_t *e)
 void events_init_Main_2 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_2, Main_2_event_handler, LV_EVENT_ALL, ui);
+    lv_obj_add_event_cb(ui->Main_2_tile_1, Main_2_tile_1_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_tile_2, Main_2_tile_2_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_tile_3, Main_2_tile_3_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->Main_2_tile_5, Main_2_tile_5_event_handler, LV_EVENT_CLICKED, ui);
@@ -265,7 +282,6 @@ static void WifiConfig_ta_event_handler(lv_event_t *e)
     if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
         if (ui->WifiConfig_kb != NULL) {
             lv_textarea_clear_selection(ta);
-            lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST);
             lv_keyboard_set_textarea(ui->WifiConfig_kb, ta);
 #if LV_USE_IME_PINYIN
             (void)gui_ime_pinyin_attach(ui->WifiConfig_kb);
@@ -796,7 +812,6 @@ static void ServerConfig_ta_event_handler(lv_event_t *e)
     if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
         if (ui->ServerConfig_kb != NULL) {
             lv_textarea_clear_selection(ta);
-            lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST);
             lv_keyboard_set_textarea(ui->ServerConfig_kb, ta);
 #if LV_USE_IME_PINYIN
             (void)gui_ime_pinyin_attach(ui->ServerConfig_kb);
@@ -1088,6 +1103,657 @@ static void ServerConfig_load_event_handler(lv_event_t *e)
     ui_server_cfg_do_load_sync(ui);
 }
 
+/* ============ 通讯参数配置（ParamConfig）SD 持久化（仅 UI 验证，不影响实际参数） ============ */
+
+#define UI_PARAM_CFG_FILE "0:/config/ui_param.cfg"
+
+static void ui_param_cfg_set_status(lv_ui *ui, const char *text, uint32_t color_hex)
+{
+    if (!ui || !ui->ParamConfig_lbl_status || !lv_obj_is_valid(ui->ParamConfig_lbl_status))
+        return;
+    lv_label_set_text(ui->ParamConfig_lbl_status, text ? text : "");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_status, lv_color_hex(color_hex), LV_PART_MAIN);
+}
+
+static void ui_param_cfg_set_tips(lv_ui *ui, const char *text, uint32_t color_hex)
+{
+    if (!ui || !ui->ParamConfig_lbl_tips || !lv_obj_is_valid(ui->ParamConfig_lbl_tips))
+        return;
+    lv_label_set_text(ui->ParamConfig_lbl_tips, text ? text : "");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_tips, lv_color_hex(color_hex), LV_PART_MAIN);
+}
+
+static bool ui_param_cfg_parse_u32(const char *s, uint32_t *out)
+{
+    if (!out) return false;
+    if (!s) return false;
+    /* 容错：允许值前面出现多余的 '=' 或空白（例如文件被写成 HARDRESET_S==60） */
+    while (*s == '=' || *s == ' ' || *s == '\t')
+        s++;
+    if (!s[0]) return false;
+    char *end = NULL;
+    unsigned long v = strtoul(s, &end, 10);
+    if (end == s) return false;
+    while (end && (*end == ' ' || *end == '\t')) end++;
+    if (end && *end != '\0') return false;
+    *out = (uint32_t)v;
+    return true;
+}
+
+/* 输入校验（防止误设导致一直重连）
+ * - strict=true：用于保存时，遇到错误直接阻止保存
+ * - strict=false：用于输入过程实时提示（不阻止）
+ */
+static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
+{
+    if (!ui) return true;
+
+    const char *hb_s    = (ui->ParamConfig_ta_heartbeat)   ? lv_textarea_get_text(ui->ParamConfig_ta_heartbeat)   : "";
+    const char *send_s  = (ui->ParamConfig_ta_sendlimit)   ? lv_textarea_get_text(ui->ParamConfig_ta_sendlimit)   : "";
+    const char *http_s  = (ui->ParamConfig_ta_httptimeout) ? lv_textarea_get_text(ui->ParamConfig_ta_httptimeout) : "";
+    const char *rst_s   = (ui->ParamConfig_ta_hardreset)   ? lv_textarea_get_text(ui->ParamConfig_ta_hardreset)   : "";
+    const char *ds_s    = (ui->ParamConfig_ta_downsample)  ? lv_textarea_get_text(ui->ParamConfig_ta_downsample)  : "";
+    const char *ckb_s   = (ui->ParamConfig_ta_chunkkb)     ? lv_textarea_get_text(ui->ParamConfig_ta_chunkkb)     : "";
+    const char *cdly_s  = (ui->ParamConfig_ta_chunkdelay)  ? lv_textarea_get_text(ui->ParamConfig_ta_chunkdelay)  : "";
+
+    uint32_t hb=0, send=0, http=0, rst=0, ds=1, ckb=0, cdly=0;
+    bool ok_hb   = ui_param_cfg_parse_u32(hb_s, &hb);
+    bool ok_send = ui_param_cfg_parse_u32(send_s, &send);
+    bool ok_http = ui_param_cfg_parse_u32(http_s, &http);
+    bool ok_rst  = ui_param_cfg_parse_u32(rst_s, &rst);
+    bool ok_ds   = ui_param_cfg_parse_u32(ds_s, &ds);
+    bool ok_ckb  = ui_param_cfg_parse_u32(ckb_s, &ckb);
+    bool ok_cdly = ui_param_cfg_parse_u32(cdly_s, &cdly);
+
+    if (!ok_hb || !ok_send || !ok_http || !ok_rst || !ok_ds || !ok_ckb || !ok_cdly) {
+        ui_param_cfg_set_tips(ui,
+                              "提示：请输入纯数字。\n"
+                              "建议值：心跳5000ms，限频200ms，回包1200ms，复位60s，降采样step=4，分段4KB/10ms",
+                              0xFFA500);
+        return !strict;
+    }
+
+    /* 动态信息：step 对应发送点数（1024/step） */
+    uint32_t pts = 0;
+    if (ds >= 1u) {
+        pts = 1024u / ds;
+        if (pts == 0u) pts = 1u;
+    }
+    char chunk_info[32];
+    if (ckb == 0u) {
+        (void)snprintf(chunk_info, sizeof(chunk_info), "关闭(单包)");
+    } else {
+        (void)snprintf(chunk_info, sizeof(chunk_info), "%luKB/%lums",
+                       (unsigned long)ckb, (unsigned long)cdly);
+    }
+
+    /* 硬范围（错误） */
+    if (hb < 200u || hb > 600000u) {
+        ui_param_cfg_set_tips(ui, "错误：心跳间隔建议范围 200..600000 ms（例如 5000）", 0xFF4444);
+        return !strict;
+    }
+    if (send > 600000u) {
+        ui_param_cfg_set_tips(ui, "错误：发包限频过大（建议 0..600000 ms，常用 200）", 0xFF4444);
+        return !strict;
+    }
+    if (http < 100u || http > 600000u) {
+        ui_param_cfg_set_tips(ui, "错误：回包超时建议范围 100..600000 ms（例如 1200）", 0xFF4444);
+        return !strict;
+    }
+    if (rst < 5u || rst > 3600u) {
+        ui_param_cfg_set_tips(ui, "错误：复位阈值建议范围 5..3600 s（例如 60）", 0xFF4444);
+        return !strict;
+    }
+    if (ds < 1u || ds > 64u) {
+        ui_param_cfg_set_tips(ui, "错误：降采样 step 建议范围 1..64（例如 1=全量，4=推荐）", 0xFF4444);
+        return !strict;
+    }
+    if (ckb > 16u) {
+        ui_param_cfg_set_tips(ui, "错误：分段大小建议范围 0..16 KB（0=不分段）", 0xFF4444);
+        return !strict;
+    }
+    if (cdly > 200u) {
+        ui_param_cfg_set_tips(ui, "错误：分段间隔建议范围 0..200 ms（例如 10）", 0xFF4444);
+        return !strict;
+    }
+
+    /* 关键约束（错误）：回包超时必须小于复位阈值（否则容易频繁重连） */
+    if (http >= (rst * 1000u)) {
+        ui_param_cfg_set_tips(ui,
+                              "错误：回包超时必须 < 复位阈值×1000。\n"
+                              "否则门控还没放行就触发无响应重连，可能一直重连。",
+                              0xFF4444);
+        return !strict;
+    }
+
+    /* 软建议（警告） */
+    if (rst < 30u) {
+        ui_param_cfg_set_tips(ui,
+                              "警告：复位阈值 < 30s 可能在网络抖动/服务器忙时频繁重连。\n"
+                              "建议：复位60s、回包1200ms、限频200ms。",
+                              0xFFA500);
+        return true;
+    }
+
+    if (send && send < 50u) {
+        char tips[220];
+        (void)snprintf(tips, sizeof(tips),
+                       "警告：限频过小会提高带宽/CPU/串口压力，可能导致掉帧或丢包。\n"
+                       "降采样：step=%lu -> points=%lu (1024/step)\n"
+                       "分段：%s\n"
+                       "建议：限频≥50ms（推荐200ms）。",
+                       (unsigned long)ds, (unsigned long)pts,
+                       chunk_info);
+        ui_param_cfg_set_tips(ui, tips, 0xFFA500);
+        return true;
+    }
+
+    if (ds > 16u) {
+        char tips[220];
+        (void)snprintf(tips, sizeof(tips),
+                       "警告：降采样 step 过大可能导致波形细节丢失。\n"
+                       "当前：step=%lu -> points=%lu (1024/step)\n"
+                       "分段：%s\n"
+                       "建议：step=4 或 8（1=全量）。",
+                       (unsigned long)ds, (unsigned long)pts,
+                       chunk_info);
+        ui_param_cfg_set_tips(ui, tips, 0xFFA500);
+        return true;
+    }
+
+    /* OK */
+    {
+        char tips[220];
+        (void)snprintf(tips, sizeof(tips),
+                       "参数看起来合理。\n"
+                       "降采样：step=%lu -> points=%lu (1024/step)\n"
+                       "分段：%s\n"
+                       "建议：step=4，分段4KB/10ms（可一键关闭分段）",
+                       (unsigned long)ds, (unsigned long)pts,
+                       chunk_info);
+        ui_param_cfg_set_tips(ui, tips, 0x111111);
+    }
+    return true;
+}
+
+static void ui_param_cfg_apply_to_ui(lv_ui *ui, const char *heartbeat_ms, const char *sendlimit_ms,
+                                     const char *http_timeout_ms, const char *hardreset_s,
+                                     const char *downsample_step,
+                                     const char *chunk_kb, const char *chunk_delay)
+{
+    if (!ui) return;
+    if (ui->ParamConfig_ta_heartbeat && lv_obj_is_valid(ui->ParamConfig_ta_heartbeat))
+        lv_textarea_set_text(ui->ParamConfig_ta_heartbeat, heartbeat_ms ? heartbeat_ms : "");
+    if (ui->ParamConfig_ta_sendlimit && lv_obj_is_valid(ui->ParamConfig_ta_sendlimit))
+        lv_textarea_set_text(ui->ParamConfig_ta_sendlimit, sendlimit_ms ? sendlimit_ms : "");
+    if (ui->ParamConfig_ta_httptimeout && lv_obj_is_valid(ui->ParamConfig_ta_httptimeout))
+        lv_textarea_set_text(ui->ParamConfig_ta_httptimeout, http_timeout_ms ? http_timeout_ms : "");
+    if (ui->ParamConfig_ta_hardreset && lv_obj_is_valid(ui->ParamConfig_ta_hardreset))
+        lv_textarea_set_text(ui->ParamConfig_ta_hardreset, hardreset_s ? hardreset_s : "");
+    if (ui->ParamConfig_ta_downsample && lv_obj_is_valid(ui->ParamConfig_ta_downsample))
+        lv_textarea_set_text(ui->ParamConfig_ta_downsample, downsample_step ? downsample_step : "");
+    if (ui->ParamConfig_ta_chunkkb && lv_obj_is_valid(ui->ParamConfig_ta_chunkkb))
+        lv_textarea_set_text(ui->ParamConfig_ta_chunkkb, chunk_kb ? chunk_kb : "");
+    if (ui->ParamConfig_ta_chunkdelay && lv_obj_is_valid(ui->ParamConfig_ta_chunkdelay))
+        lv_textarea_set_text(ui->ParamConfig_ta_chunkdelay, chunk_delay ? chunk_delay : "");
+}
+
+static FRESULT ui_param_cfg_read_file(char *heartbeat_ms, size_t heartbeat_len,
+                                      char *sendlimit_ms, size_t sendlimit_len,
+                                      char *http_timeout_ms, size_t http_timeout_len,
+                                      char *hardreset_s, size_t hardreset_len,
+                                      char *downsample_step, size_t downsample_len,
+                                      char *chunk_kb, size_t chunk_kb_len,
+                                      char *chunk_delay, size_t chunk_delay_len)
+{
+    if (!heartbeat_ms || !sendlimit_ms || !http_timeout_ms || !hardreset_s || !downsample_step || !chunk_kb || !chunk_delay)
+        return FR_INVALID_OBJECT;
+    heartbeat_ms[0] = sendlimit_ms[0] = http_timeout_ms[0] = hardreset_s[0] = downsample_step[0] = '\0';
+    chunk_kb[0] = chunk_delay[0] = '\0';
+
+    FRESULT res = ui_sd_mount_with_mkfs();
+    if (res != FR_OK) {
+        printf("[PARAM_UI_CFG] load skipped: SD not ready (res=%d)\r\n", (int)res);
+        return res;
+    }
+
+    FIL fil;
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        res = f_open(&fil, UI_PARAM_CFG_FILE, FA_READ);
+        if (res == FR_OK) {
+            break;
+        }
+        printf("[PARAM_UI_CFG] open for read fail: %s res=%d attempt=%d\r\n",
+               UI_PARAM_CFG_FILE, (int)res, attempt);
+        if (res == FR_DISK_ERR && attempt == 1) {
+            g_ui_sd_mounted = 0;
+            (void)ui_sd_mount_with_mkfs();
+            continue;
+        }
+        return res;
+    }
+
+    char line[160];
+    while (f_gets(line, sizeof(line), &fil)) {
+        ui_wifi_cfg_rstrip(line);
+        if (strncmp(line, "HEARTBEAT_MS=", 13) == 0) {
+            strncpy(heartbeat_ms, line + 13, heartbeat_len - 1);
+            heartbeat_ms[heartbeat_len - 1] = '\0';
+        } else if (strncmp(line, "SENDLIMIT_MS=", 13) == 0) {
+            strncpy(sendlimit_ms, line + 13, sendlimit_len - 1);
+            sendlimit_ms[sendlimit_len - 1] = '\0';
+        } else if (strncmp(line, "HTTP_TIMEOUT_MS=", 16) == 0) {
+            strncpy(http_timeout_ms, line + 16, http_timeout_len - 1);
+            http_timeout_ms[http_timeout_len - 1] = '\0';
+        } else if (strncmp(line, "HARDRESET_S=", 11) == 0) {
+            strncpy(hardreset_s, line + 11, hardreset_len - 1);
+            hardreset_s[hardreset_len - 1] = '\0';
+        } else if (strncmp(line, "DOWNSAMPLE_STEP=", 16) == 0) {
+            strncpy(downsample_step, line + 16, downsample_len - 1);
+            downsample_step[downsample_len - 1] = '\0';
+        } else if (strncmp(line, "CHUNK_KB=", 9) == 0) {
+            strncpy(chunk_kb, line + 9, chunk_kb_len - 1);
+            chunk_kb[chunk_kb_len - 1] = '\0';
+        } else if (strncmp(line, "CHUNK_DELAY_MS=", 15) == 0) {
+            strncpy(chunk_delay, line + 15, chunk_delay_len - 1);
+            chunk_delay[chunk_delay_len - 1] = '\0';
+        }
+    }
+    (void)f_close(&fil);
+
+    printf("[PARAM_UI_CFG] loaded: hb=%s send=%s http=%s reset=%s ds=%s chunk=%s delay=%s\r\n",
+           heartbeat_ms, sendlimit_ms, http_timeout_ms, hardreset_s, downsample_step, chunk_kb, chunk_delay);
+    return FR_OK;
+}
+
+static FRESULT ui_param_cfg_write_file(const char *heartbeat_ms, const char *sendlimit_ms,
+                                       const char *http_timeout_ms, const char *hardreset_s,
+                                       const char *downsample_step,
+                                       const char *chunk_kb, const char *chunk_delay)
+{
+    printf("[PARAM_UI_CFG] write_file: start\r\n");
+    FRESULT res = ui_sd_mount_with_mkfs();
+    if (res != FR_OK) {
+        printf("[PARAM_UI_CFG] save failed: SD not ready (res=%d)\r\n", (int)res);
+        return res;
+    }
+    printf("[PARAM_UI_CFG] write_file: SD mounted\r\n");
+
+    res = ui_wifi_cfg_ensure_dir();
+    printf("[PARAM_UI_CFG] write_file: ensure_dir res=%d\r\n", (int)res);
+    if (res != FR_OK) {
+        printf("[PARAM_UI_CFG] ensure dir fail: res=%d\r\n", (int)res);
+        return res;
+    }
+
+    /* 原子写入：先写临时文件，再 rename 覆盖 */
+    const char *tmp_path = "0:/config/.ui_param.cfg.tmp";
+
+    printf("[PARAM_UI_CFG] write_file: opening tmp...\r\n");
+    FIL fil;
+    res = f_open(&fil, tmp_path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) {
+        printf("[PARAM_UI_CFG] open for write fail: %s res=%d\r\n", tmp_path, (int)res);
+        if (res == FR_DISK_ERR) {
+            g_ui_sd_mounted = 0;
+            (void)f_mount(NULL, (TCHAR const *)SDPath, 0);
+            osDelay(10);
+            (void)ui_sd_mount_with_mkfs();
+            res = f_open(&fil, tmp_path, FA_WRITE | FA_CREATE_ALWAYS);
+            printf("[PARAM_UI_CFG] retry open tmp -> %d\r\n", (int)res);
+        }
+        if (res != FR_OK) {
+            g_ui_sd_last_err = res;
+            g_ui_sd_last_err_tick = osKernelGetTickCount();
+            return res;
+        }
+    }
+
+    printf("[PARAM_UI_CFG] write_file: writing...\r\n");
+    char buf[320];
+    /* 只写入纯数字，避免出现 HARDRESET_S==60 这种“脏文件” */
+    uint32_t hb_u = 0, send_u = 0, http_u = 0, rst_u = 0, ds_u = 1, ckb_u = 4, cdly_u = 10;
+    (void)ui_param_cfg_parse_u32(heartbeat_ms, &hb_u);
+    (void)ui_param_cfg_parse_u32(sendlimit_ms, &send_u);
+    (void)ui_param_cfg_parse_u32(http_timeout_ms, &http_u);
+    (void)ui_param_cfg_parse_u32(hardreset_s, &rst_u);
+    (void)ui_param_cfg_parse_u32(downsample_step, &ds_u);
+    (void)ui_param_cfg_parse_u32(chunk_kb, &ckb_u);
+    (void)ui_param_cfg_parse_u32(chunk_delay, &cdly_u);
+    if (ds_u < 1u) ds_u = 1u;
+    /* 允许 ckb=0 表示关闭分段 */
+    int n = snprintf(buf, sizeof(buf),
+                     "HEARTBEAT_MS=%lu\nSENDLIMIT_MS=%lu\nHTTP_TIMEOUT_MS=%lu\nHARDRESET_S=%lu\nDOWNSAMPLE_STEP=%lu\nCHUNK_KB=%lu\nCHUNK_DELAY_MS=%lu\n",
+                     (unsigned long)hb_u,
+                     (unsigned long)send_u,
+                     (unsigned long)http_u,
+                     (unsigned long)rst_u,
+                     (unsigned long)ds_u,
+                     (unsigned long)ckb_u,
+                     (unsigned long)cdly_u);
+    UINT bw = 0;
+    res = f_write(&fil, buf, (UINT)n, &bw);
+    printf("[PARAM_UI_CFG] write_file: f_write res=%d bw=%u\r\n", (int)res, (unsigned)bw);
+
+    if (res == FR_OK) {
+        osDelay(5);
+        FRESULT sync_res = f_sync(&fil);
+        printf("[PARAM_UI_CFG] write_file: f_sync res=%d\r\n", (int)sync_res);
+        if (sync_res != FR_OK) {
+            res = sync_res;
+        }
+    }
+
+    FRESULT close_res = f_close(&fil);
+    printf("[PARAM_UI_CFG] write_file: f_close res=%d\r\n", (int)close_res);
+    if (close_res != FR_OK && res == FR_OK) {
+        res = close_res;
+    }
+
+    if (res == FR_OK) {
+        uint32_t t0 = osKernelGetTickCount();
+        while ((osKernelGetTickCount() - t0) < 100U) {
+            if (BSP_SD_GetCardState() == SD_TRANSFER_OK)
+                break;
+            osDelay(5);
+        }
+        printf("[PARAM_UI_CFG] post-close wait: card_state=%u\r\n", (unsigned)BSP_SD_GetCardState());
+    }
+
+    if (res != FR_OK) {
+        printf("[PARAM_UI_CFG] write_file failed, unlink tmp\r\n");
+        (void)f_unlink(tmp_path);
+        g_ui_sd_mounted = 0;
+        g_ui_sd_last_err = res;
+        g_ui_sd_last_err_tick = osKernelGetTickCount();
+        return res;
+    }
+
+    (void)f_unlink(UI_PARAM_CFG_FILE);
+    FRESULT rn = f_rename(tmp_path, UI_PARAM_CFG_FILE);
+    printf("[PARAM_UI_CFG] rename tmp -> cfg res=%d\r\n", (int)rn);
+    if (rn != FR_OK) {
+        (void)f_unlink(tmp_path);
+        g_ui_sd_mounted = 0;
+        g_ui_sd_last_err = rn;
+        g_ui_sd_last_err_tick = osKernelGetTickCount();
+        return rn;
+    }
+
+    printf("[PARAM_UI_CFG] saved: final_res=%d bytes=%u\r\n", (int)res, (unsigned)bw);
+    return FR_OK;
+}
+
+static void ui_param_cfg_do_load_sync(lv_ui *ui)
+{
+    if (!ui) return;
+    char hb[24] = {0}, send[24] = {0}, http[24] = {0}, reset[24] = {0}, ds[24] = {0}, ckb[24] = {0}, cdly[24] = {0};
+    FRESULT res = ui_param_cfg_read_file(hb, sizeof(hb), send, sizeof(send), http, sizeof(http), reset, sizeof(reset),
+                                         ds, sizeof(ds), ckb, sizeof(ckb), cdly, sizeof(cdly));
+    if (res == FR_OK) {
+        /* 读取时就“净化”一次：把 =60 / ==60 之类的值纠正为纯数字回写到输入框 */
+        uint32_t hb_u = 0, send_u = 0, http_u = 0, rst_u = 0, ds_u = 1, ckb_u = 4, cdly_u = 10;
+        bool ok_hb = ui_param_cfg_parse_u32(hb, &hb_u);
+        bool ok_send = ui_param_cfg_parse_u32(send, &send_u);
+        bool ok_http = ui_param_cfg_parse_u32(http, &http_u);
+        bool ok_rst = ui_param_cfg_parse_u32(reset, &rst_u);
+        bool ok_ds = ui_param_cfg_parse_u32(ds, &ds_u);
+        bool ok_ckb = ui_param_cfg_parse_u32(ckb, &ckb_u);
+        bool ok_cdly = ui_param_cfg_parse_u32(cdly, &cdly_u);
+        if (ok_hb && ui->ParamConfig_ta_heartbeat && lv_obj_is_valid(ui->ParamConfig_ta_heartbeat)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)hb_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_heartbeat, tmp);
+        }
+        if (ok_send && ui->ParamConfig_ta_sendlimit && lv_obj_is_valid(ui->ParamConfig_ta_sendlimit)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)send_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_sendlimit, tmp);
+        }
+        if (ok_http && ui->ParamConfig_ta_httptimeout && lv_obj_is_valid(ui->ParamConfig_ta_httptimeout)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)http_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_httptimeout, tmp);
+        }
+        if (ok_rst && ui->ParamConfig_ta_hardreset && lv_obj_is_valid(ui->ParamConfig_ta_hardreset)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)rst_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_hardreset, tmp);
+        }
+        if (ok_ds && ui->ParamConfig_ta_downsample && lv_obj_is_valid(ui->ParamConfig_ta_downsample)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)ds_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_downsample, tmp);
+        }
+        if (ok_ckb && ui->ParamConfig_ta_chunkkb && lv_obj_is_valid(ui->ParamConfig_ta_chunkkb)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)ckb_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_chunkkb, tmp);
+        }
+        if (ok_cdly && ui->ParamConfig_ta_chunkdelay && lv_obj_is_valid(ui->ParamConfig_ta_chunkdelay)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)cdly_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_chunkdelay, tmp);
+        }
+
+        /* 影响实际参数：将 SD 读到的值写入 ESP 通讯参数缓存（不改 WiFi/Server/SystemConfig_t） */
+        ESP_CommParams_t p;
+        ESP_CommParams_Get(&p); /* 先取当前缓存作为兜底（避免文件缺字段时把值变成 0） */
+        if (ok_hb)   p.heartbeat_ms    = hb_u;
+        if (ok_send) p.min_interval_ms = send_u;
+        if (ok_http) p.http_timeout_ms = http_u;
+        if (ok_rst)  p.hardreset_sec   = rst_u;
+        if (ok_ds)   p.wave_step       = ds_u;
+        if (ok_ckb)  p.chunk_kb        = ckb_u;
+        if (ok_cdly) p.chunk_delay_ms  = cdly_u;
+        ESP_CommParams_Apply(&p);
+    }
+    ui_sd_result_to_status(ui, res, ui_param_cfg_set_status, "加载完成");
+    (void)ui_param_cfg_validate_and_warn(ui, false);
+}
+
+static void ui_param_cfg_do_save_sync(lv_ui *ui)
+{
+    if (!ui) return;
+    if (!ui_param_cfg_validate_and_warn(ui, true)) {
+        ui_param_cfg_set_status(ui, "参数错误：已阻止保存（请按提示修改）", 0xFF4444);
+        if (ui->ParamConfig_btn_save && lv_obj_is_valid(ui->ParamConfig_btn_save))
+            lv_obj_clear_state(ui->ParamConfig_btn_save, LV_STATE_DISABLED);
+        return;
+    }
+    const char *hb    = (ui->ParamConfig_ta_heartbeat)  ? lv_textarea_get_text(ui->ParamConfig_ta_heartbeat)  : "";
+    const char *send  = (ui->ParamConfig_ta_sendlimit) ? lv_textarea_get_text(ui->ParamConfig_ta_sendlimit) : "";
+    const char *http  = (ui->ParamConfig_ta_httptimeout) ? lv_textarea_get_text(ui->ParamConfig_ta_httptimeout) : "";
+    const char *reset = (ui->ParamConfig_ta_hardreset) ? lv_textarea_get_text(ui->ParamConfig_ta_hardreset) : "";
+    const char *ds    = (ui->ParamConfig_ta_downsample) ? lv_textarea_get_text(ui->ParamConfig_ta_downsample) : "";
+    const char *ckb   = (ui->ParamConfig_ta_chunkkb) ? lv_textarea_get_text(ui->ParamConfig_ta_chunkkb) : "";
+    const char *cdly  = (ui->ParamConfig_ta_chunkdelay) ? lv_textarea_get_text(ui->ParamConfig_ta_chunkdelay) : "";
+
+    /* 注意：这里仅做 UI->SD 的保存/回读验证，不写入任何实际运行参数。 */
+    FRESULT res = ui_param_cfg_write_file(hb, send, http, reset, ds, ckb, cdly);
+
+    if (res == FR_OK) {
+        /* 保存后立即回读一次，验证保存成功并回显 */
+        ui_param_cfg_do_load_sync(ui);
+        /* ui_param_cfg_do_load_sync 已经会设置状态，这里覆盖为“保存成功”更直观 */
+        ui_param_cfg_set_status(ui, "保存成功", 0x3dfb00);
+    } else {
+        ui_sd_result_to_status(ui, res, ui_param_cfg_set_status, "保存成功");
+    }
+
+    if (ui->ParamConfig_btn_save && lv_obj_is_valid(ui->ParamConfig_btn_save))
+        lv_obj_clear_state(ui->ParamConfig_btn_save, LV_STATE_DISABLED);
+}
+
+static void ParamConfig_load_timer_cb(lv_timer_t *t)
+{
+    lv_ui *ui = (lv_ui *)lv_timer_get_user_data(t);
+    lv_timer_del(t);
+    if (!ui) return;
+    ui_param_cfg_set_status(ui, "正在加载...", 0xFFA500);
+    lv_obj_update_layout(ui->ParamConfig);
+    lv_refr_now(NULL);
+    ui_param_cfg_do_load_sync(ui);
+}
+
+static void ParamConfig_screen_event_handler(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_SCREEN_LOADED) {
+        return;
+    }
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) return;
+    ui_param_cfg_set_status(ui, "正在加载...", 0xFFA500);
+    lv_timer_create(ParamConfig_load_timer_cb, 100, ui);
+}
+
+static void ParamConfig_ta_event_handler(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *ta = lv_event_get_target(e);
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
+        if (ui->ParamConfig_kb != NULL) {
+            lv_textarea_clear_selection(ta);
+            lv_keyboard_set_textarea(ui->ParamConfig_kb, ta);
+            lv_obj_remove_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    else if (code == LV_EVENT_VALUE_CHANGED) {
+        (void)ui_param_cfg_validate_and_warn(ui, false);
+    }
+}
+
+static void ParamConfig_kb_event_handler(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+        lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void ParamConfig_apply_preset(lv_ui *ui,
+                                     const char *hb, const char *send, const char *http,
+                                     const char *reset, const char *chunkkb, const char *chunkdelay,
+                                     const char *downsample,
+                                     const char *status_text)
+{
+    if (!ui) return;
+    lv_indev_wait_release(lv_indev_active());
+    if (ui->ParamConfig_kb) {
+        lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (ui->ParamConfig_ta_heartbeat && lv_obj_is_valid(ui->ParamConfig_ta_heartbeat))
+        lv_textarea_set_text(ui->ParamConfig_ta_heartbeat, hb ? hb : "");
+    if (ui->ParamConfig_ta_sendlimit && lv_obj_is_valid(ui->ParamConfig_ta_sendlimit))
+        lv_textarea_set_text(ui->ParamConfig_ta_sendlimit, send ? send : "");
+    if (ui->ParamConfig_ta_httptimeout && lv_obj_is_valid(ui->ParamConfig_ta_httptimeout))
+        lv_textarea_set_text(ui->ParamConfig_ta_httptimeout, http ? http : "");
+    if (ui->ParamConfig_ta_hardreset && lv_obj_is_valid(ui->ParamConfig_ta_hardreset))
+        lv_textarea_set_text(ui->ParamConfig_ta_hardreset, reset ? reset : "");
+    if (ui->ParamConfig_ta_chunkkb && lv_obj_is_valid(ui->ParamConfig_ta_chunkkb))
+        lv_textarea_set_text(ui->ParamConfig_ta_chunkkb, chunkkb ? chunkkb : "");
+    if (ui->ParamConfig_ta_chunkdelay && lv_obj_is_valid(ui->ParamConfig_ta_chunkdelay))
+        lv_textarea_set_text(ui->ParamConfig_ta_chunkdelay, chunkdelay ? chunkdelay : "");
+    if (ui->ParamConfig_ta_downsample && lv_obj_is_valid(ui->ParamConfig_ta_downsample))
+        lv_textarea_set_text(ui->ParamConfig_ta_downsample, downsample ? downsample : "");
+
+    ui_param_cfg_set_status(ui, status_text ? status_text : "正在保存...", 0xFFA500);
+    lv_obj_update_layout(ui->ParamConfig);
+    lv_refr_now(NULL);
+    ui_param_cfg_do_save_sync(ui);
+}
+
+static void ParamConfig_preset_lan_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    ParamConfig_apply_preset(ui,
+                             "5000", "200", "1200", "60",
+                             "0", "0", "1",
+                             "已应用局域网参数，正在保存...");
+}
+
+static void ParamConfig_preset_wan_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    ParamConfig_apply_preset(ui,
+                             "120000", "1000", "8000", "60",
+                             "1", "160", "1",
+                             "已应用公网参数，正在保存...");
+}
+
+static void ParamConfig_nochunk_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) return;
+    lv_indev_wait_release(lv_indev_active());
+    if (ui->ParamConfig_kb) {
+        lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (ui->ParamConfig_ta_chunkkb && lv_obj_is_valid(ui->ParamConfig_ta_chunkkb)) {
+        lv_textarea_set_text(ui->ParamConfig_ta_chunkkb, "0");
+    }
+    if (ui->ParamConfig_ta_chunkdelay && lv_obj_is_valid(ui->ParamConfig_ta_chunkdelay)) {
+        lv_textarea_set_text(ui->ParamConfig_ta_chunkdelay, "0");
+    }
+
+    ui_param_cfg_set_status(ui, "已设置无分段，正在保存...", 0xFFA500);
+    lv_obj_update_layout(ui->ParamConfig);
+    lv_refr_now(NULL);
+    ui_param_cfg_do_save_sync(ui);
+}
+
+static void ParamConfig_back_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) {
+        return;
+    }
+    lv_indev_wait_release(lv_indev_active());
+    if (ui->ParamConfig_kb) {
+        lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+    /*
+     * 统一返回规则（强约定，避免界面层级混乱）：
+     * - 所有“图标进入的功能页/配置页”的【返回】一律回 Aurora 主界面（setup_scr_Aurora / Main_1）。
+     * - Main_2（配置中心）只是 Aurora 的“配置页/二级入口”，不作为全局返回目标。
+     */
+    ui_load_scr_animation(&guider_ui, &guider_ui.Main_1, guider_ui.Main_1_del, &guider_ui.ParamConfig_del,
+                          setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+}
+
+static void ParamConfig_load_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) return;
+    lv_indev_wait_release(lv_indev_active());
+    if (ui->ParamConfig_kb) {
+        lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+    ui_param_cfg_set_status(ui, "正在加载...", 0xFFA500);
+    lv_obj_update_layout(ui->ParamConfig);
+    lv_refr_now(NULL);
+    ui_param_cfg_do_load_sync(ui);
+}
+
+static void ParamConfig_save_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) return;
+    lv_indev_wait_release(lv_indev_active());
+    if (ui->ParamConfig_kb) {
+        lv_obj_add_flag(ui->ParamConfig_kb, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (ui->ParamConfig_btn_save && lv_obj_is_valid(ui->ParamConfig_btn_save))
+        lv_obj_add_state(ui->ParamConfig_btn_save, LV_STATE_DISABLED);
+    ui_param_cfg_set_status(ui, "正在保存...", 0xFFA500);
+    lv_obj_update_layout(ui->ParamConfig);
+    lv_refr_now(NULL);
+    ui_param_cfg_do_save_sync(ui);
+}
+
 void events_init_Main_3 (lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->Main_3, Main_3_event_handler, LV_EVENT_ALL, ui);
@@ -1125,6 +1791,43 @@ void events_init_ServerConfig(lv_ui *ui)
     lv_obj_add_event_cb(ui->ServerConfig, ServerConfig_screen_event_handler, LV_EVENT_SCREEN_LOADED, ui);
 }
 
+void events_init_ParamConfig(lv_ui *ui)
+{
+    lv_obj_add_event_cb(ui->ParamConfig_ta_heartbeat, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    lv_obj_add_event_cb(ui->ParamConfig_ta_sendlimit, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    lv_obj_add_event_cb(ui->ParamConfig_ta_httptimeout, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    lv_obj_add_event_cb(ui->ParamConfig_ta_hardreset, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    if (ui->ParamConfig_ta_downsample) {
+        lv_obj_add_event_cb(ui->ParamConfig_ta_downsample, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    }
+    if (ui->ParamConfig_ta_chunkkb) {
+        lv_obj_add_event_cb(ui->ParamConfig_ta_chunkkb, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    }
+    if (ui->ParamConfig_ta_chunkdelay) {
+        lv_obj_add_event_cb(ui->ParamConfig_ta_chunkdelay, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    }
+    lv_obj_add_event_cb(ui->ParamConfig_kb, ParamConfig_kb_event_handler, LV_EVENT_READY, ui);
+    lv_obj_add_event_cb(ui->ParamConfig_kb, ParamConfig_kb_event_handler, LV_EVENT_CANCEL, ui);
+    lv_obj_add_event_cb(ui->ParamConfig_btn_back, ParamConfig_back_event_handler, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->ParamConfig_btn_load, ParamConfig_load_event_handler, LV_EVENT_CLICKED, ui);
+    lv_obj_add_event_cb(ui->ParamConfig_btn_save, ParamConfig_save_event_handler, LV_EVENT_CLICKED, ui);
+    if (ui->ParamConfig_btn_nochunk) {
+        lv_obj_add_event_cb(ui->ParamConfig_btn_nochunk, ParamConfig_nochunk_event_handler, LV_EVENT_CLICKED, ui);
+    }
+    if (ui->ParamConfig_btn_lan) {
+        lv_obj_add_event_cb(ui->ParamConfig_btn_lan, ParamConfig_preset_lan_event_handler, LV_EVENT_CLICKED, ui);
+    }
+    if (ui->ParamConfig_btn_wan) {
+        lv_obj_add_event_cb(ui->ParamConfig_btn_wan, ParamConfig_preset_wan_event_handler, LV_EVENT_CLICKED, ui);
+    }
+
+    /* 每次切换进入屏幕都自动加载（仅 UI 读写验证，不影响实际参数） */
+    lv_obj_add_event_cb(ui->ParamConfig, ParamConfig_screen_event_handler, LV_EVENT_SCREEN_LOADED, ui);
+
+    /* 初始提示一次 */
+    (void)ui_param_cfg_validate_and_warn(ui, false);
+}
+
 static void DeviceConnect_back_event_handler(lv_event_t *e)
 {
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
@@ -1159,10 +1862,16 @@ static uint8_t g_dc_auto_running = 0;
 static uint32_t g_dc_report_stop_tick = 0;
 static uint8_t g_dc_reg_dimmed = 0;
 static lv_obj_t *g_dc_lbl_reg_countdown = NULL;
+static uint32_t g_dc_console_len = 0;
 /* DeviceConnect 进入时是否已从 SD 加载并应用到 ESP 配置缓冲区 */
 static uint8_t g_dc_cfg_loaded = 0;
 /* 进入 DeviceConnect 时的配置加载 timer（去重，避免重复创建导致 UI 抖动/刷屏） */
 static lv_timer_t *g_dc_cfg_timer = NULL;
+/* 解决“Processing 一闪就回 Idle”：步骤执行中不允许 dc_sync_reporting_ui 覆盖行状态 */
+static uint8_t g_dc_step_busy_wifi = 0;
+static uint8_t g_dc_step_busy_tcp  = 0;
+static uint8_t g_dc_step_busy_reg  = 0;
+static uint8_t g_dc_step_busy_rep  = 0;
 
 typedef struct
 {
@@ -1273,20 +1982,10 @@ static void dc_reg_countdown_update(lv_ui *ui)
     }
 }
 
-static void dc_post_log_from_esp(const char *line, void *ctx)
+static void dc_queue_log_line(const char *line)
 {
-    (void)ctx;
     if (!g_dc_q || !line)
         return;
-    /* 默认过滤掉“每秒刷屏”的调试统计，避免长期运行导致 LVGL 卡死 */
-#ifndef EW_DEVICECONNECT_LOG_VERBOSE
-#define EW_DEVICECONNECT_LOG_VERBOSE 0
-#endif
-#if (EW_DEVICECONNECT_LOG_VERBOSE == 0)
-    if (strncmp(line, "[调试]", 6) == 0) {
-        return;
-    }
-#endif
     dc_msg_t m;
     memset(&m, 0, sizeof(m));
     m.type = DC_MSG_LOG;
@@ -1303,6 +2002,38 @@ static void dc_post_log_from_esp(const char *line, void *ctx)
             m.text[i] = '\n';
     }
     (void)osMessageQueuePut(g_dc_q, &m, 0U, 0U);
+}
+
+static void dc_post_log_from_esp(const char *line, void *ctx)
+{
+    (void)ctx;
+    if (!g_dc_q || !line)
+        return;
+    /* 默认过滤掉“每秒刷屏”的调试统计，避免长期运行导致 LVGL 卡死 */
+#ifndef EW_DEVICECONNECT_LOG_VERBOSE
+#define EW_DEVICECONNECT_LOG_VERBOSE 0
+#endif
+#if (EW_DEVICECONNECT_LOG_VERBOSE == 0)
+    if (strncmp(line, "[调试]", 6) == 0) {
+        return;
+    }
+#endif
+    /* 日志节流：200ms 内仅投递 1 条，其余丢弃并汇总 */
+    static uint32_t last_log_tick = 0;
+    static uint16_t dropped = 0;
+    uint32_t now = lv_tick_get();
+    if (last_log_tick != 0U && (now - last_log_tick) < 200U) {
+        dropped++;
+        return;
+    }
+    if (dropped) {
+        char info[64];
+        snprintf(info, sizeof(info), "...(log throttled, dropped %u lines)", (unsigned)dropped);
+        dc_queue_log_line(info);
+        dropped = 0;
+    }
+    last_log_tick = now;
+    dc_queue_log_line(line);
 }
 
 static void dc_post_step_from_esp(esp_ui_cmd_t step, bool ok, void *ctx)
@@ -1329,21 +2060,31 @@ static void dc_console_append(lv_ui *ui, const char *line)
 
     /* 控制最大长度，避免无限增长 */
     const uint32_t max_len = 2048;
-    if (lv_textarea_get_text(ui->DeviceConnect_ta_console) &&
-        strlen(lv_textarea_get_text(ui->DeviceConnect_ta_console)) > (max_len - 256))
+    const char *cur = lv_textarea_get_text(ui->DeviceConnect_ta_console);
+    if (g_dc_console_len == 0 && cur && cur[0] != '\0') {
+        g_dc_console_len = (uint32_t)strlen(cur);
+    }
+    if (g_dc_console_len > (max_len - 256))
     {
-        lv_textarea_set_text(ui->DeviceConnect_ta_console, "> (log truncated)\n");
+        const char *trunc = "> (log truncated)\n";
+        lv_textarea_set_text(ui->DeviceConnect_ta_console, trunc);
+        g_dc_console_len = (uint32_t)strlen(trunc);
     }
 
     /* 模仿 HTML：每行前加 "> " */
     if (line[0] != '>' )
     {
         lv_textarea_add_text(ui->DeviceConnect_ta_console, "> ");
+        g_dc_console_len += 2;
     }
     lv_textarea_add_text(ui->DeviceConnect_ta_console, line);
     size_t last = strlen(line);
+    g_dc_console_len += (uint32_t)last;
     if (last == 0 || line[last - 1] != '\n')
+    {
         lv_textarea_add_text(ui->DeviceConnect_ta_console, "\n");
+        g_dc_console_len += 1;
+    }
 
     lv_textarea_set_cursor_pos(ui->DeviceConnect_ta_console, LV_TEXTAREA_CURSOR_LAST);
 }
@@ -1368,6 +2109,108 @@ static void dc_step_reset_ui(lv_obj_t *led, lv_obj_t *lbl_stat, lv_obj_t *btn, c
     /* 未上报时：按钮应该随时可点。这里仅清掉 disabled（若正在上报，外层会拦截点击） */
     if (btn && lv_obj_is_valid(btn))
         lv_obj_clear_state(btn, LV_STATE_DISABLED);
+}
+
+/* 强制把“数据上报”行的 UI 同步到实际上报状态。
+ * 解决问题：实际在上报(g_report_enabled=1)但界面因重新进入/重建而显示 Idle，且提示 stop reporting first。
+ * 规则：上报开启时，锁定 WiFi/TCP/REG/AUTO；仅允许点击“停止上报”。
+ */
+static void dc_sync_reporting_ui(lv_ui *ui)
+{
+    if (!ui) return;
+    static int last_reporting = -1;
+    static int last_wifi_ok = -1;
+    static int last_tcp_ok = -1;
+    static int last_reg_ok = -1;
+
+    bool reporting = ESP_UI_IsReporting();
+    bool wifi_ok = ESP_UI_IsWiFiOk();
+    bool tcp_ok = ESP_UI_IsTcpOk();
+    bool reg_ok = ESP_UI_IsRegOk();
+
+    /* 上报中必然意味着 WiFi/TCP/REG 已 OK（否则 ESP 侧会拒绝开启上报）。
+     * 自动重连发生在进入界面前时，步骤消息可能丢失，这里必须用“真实状态”强制刷新。
+     */
+    if (reporting) {
+        wifi_ok = true;
+        tcp_ok = true;
+        reg_ok = true;
+    }
+
+    /* 任何情况下都不要让 report 按钮卡在 disabled（否则用户无法停止上报） */
+    if (ui->DeviceConnect_btn_report && lv_obj_is_valid(ui->DeviceConnect_btn_report)) {
+        if (lv_obj_has_state(ui->DeviceConnect_btn_report, LV_STATE_DISABLED)) {
+            lv_obj_clear_state(ui->DeviceConnect_btn_report, LV_STATE_DISABLED);
+        }
+    }
+
+    if (last_reporting != (int)reporting) {
+        if (ui->DeviceConnect_led_report && lv_obj_is_valid(ui->DeviceConnect_led_report)) {
+            dc_led_set_state(ui->DeviceConnect_led_report, reporting ? 0x3dfb00 : 0x999999, reporting);
+        }
+        if (ui->DeviceConnect_lbl_stat_report && lv_obj_is_valid(ui->DeviceConnect_lbl_stat_report)) {
+            lv_label_set_text(ui->DeviceConnect_lbl_stat_report, reporting ? "Uploading..." : "未连接 (Idle)");
+        }
+        if (ui->DeviceConnect_lbl_btn_report && lv_obj_is_valid(ui->DeviceConnect_lbl_btn_report)) {
+            lv_label_set_text(ui->DeviceConnect_lbl_btn_report, reporting ? "停止上报" : "开始上报");
+            lv_obj_set_style_text_color(ui->DeviceConnect_lbl_btn_report,
+                                        reporting ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x2F35DA),
+                                        LV_PART_MAIN);
+        }
+        if (ui->DeviceConnect_btn_report && lv_obj_is_valid(ui->DeviceConnect_btn_report)) {
+            lv_obj_set_style_bg_color(ui->DeviceConnect_btn_report,
+                                      reporting ? lv_color_hex(0xff4444) : lv_color_hex(0x3dfb00),
+                                      LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(ui->DeviceConnect_btn_report, 255, LV_PART_MAIN);
+        }
+        /* 上报开启：锁定连接按钮；停止上报：恢复 */
+        dc_set_buttons_enabled(ui, !reporting);
+        last_reporting = reporting ? 1 : 0;
+    }
+
+    /* 同步 WiFi/TCP/REG 三步的真实状态（不要依赖历史 step 消息） */
+    if (!g_dc_step_busy_wifi) {
+        if (last_wifi_ok != (int)wifi_ok) {
+            if (ui->DeviceConnect_led_wifi && lv_obj_is_valid(ui->DeviceConnect_led_wifi)) {
+                dc_led_set_state(ui->DeviceConnect_led_wifi, wifi_ok ? 0x3dfb00 : 0x999999, wifi_ok);
+            }
+            if (ui->DeviceConnect_lbl_stat_wifi && lv_obj_is_valid(ui->DeviceConnect_lbl_stat_wifi)) {
+                lv_label_set_text(ui->DeviceConnect_lbl_stat_wifi, wifi_ok ? "WiFi Connected" : "未连接 (Idle)");
+            }
+            last_wifi_ok = wifi_ok ? 1 : 0;
+        }
+    }
+    if (!g_dc_step_busy_tcp) {
+        if (last_tcp_ok != (int)tcp_ok) {
+            if (ui->DeviceConnect_led_tcp && lv_obj_is_valid(ui->DeviceConnect_led_tcp)) {
+                dc_led_set_state(ui->DeviceConnect_led_tcp, tcp_ok ? 0x3dfb00 : 0x999999, tcp_ok);
+            }
+            if (ui->DeviceConnect_lbl_stat_tcp && lv_obj_is_valid(ui->DeviceConnect_lbl_stat_tcp)) {
+                lv_label_set_text(ui->DeviceConnect_lbl_stat_tcp, tcp_ok ? "TCP Linked" : "未连接 (Idle)");
+            }
+            last_tcp_ok = tcp_ok ? 1 : 0;
+        }
+    }
+    if (!g_dc_step_busy_reg) {
+        if (last_reg_ok != (int)reg_ok) {
+            if (ui->DeviceConnect_led_reg && lv_obj_is_valid(ui->DeviceConnect_led_reg)) {
+                dc_led_set_state(ui->DeviceConnect_led_reg, reg_ok ? 0x3dfb00 : 0x999999, reg_ok);
+            }
+            if (ui->DeviceConnect_lbl_stat_reg && lv_obj_is_valid(ui->DeviceConnect_lbl_stat_reg)) {
+                lv_label_set_text(ui->DeviceConnect_lbl_stat_reg, reg_ok ? "Registered" : "未连接 (Idle)");
+            }
+            last_reg_ok = reg_ok ? 1 : 0;
+        }
+    }
+
+    if (reporting) {
+        /* 上报中：不显示“注册过期倒计时/变暗” */
+        if (last_reporting != 1 || g_dc_report_stop_tick != 0 || g_dc_reg_dimmed) {
+            g_dc_report_stop_tick = 0;
+            g_dc_reg_dimmed = 0;
+            dc_reg_countdown_set_visible(false);
+        }
+    }
 }
 
 /* ============ DeviceConnect: 进入界面时从 SD 加载 WiFi/Server 配置，并写入 ESP 缓冲区 ============ */
@@ -1406,6 +2249,9 @@ static bool dc_apply_cfg_to_esp_from_files(lv_ui *ui)
     ESP_Config_Apply(&cfg);
     printf("[DC_CFG] applied: ssid=%s ip=%s port=%u id=%s loc=%s\r\n",
            cfg.wifi_ssid, cfg.server_ip, (unsigned)cfg.server_port, cfg.node_id, cfg.node_location);
+
+    /* 进入设备连接界面也读取一次通讯参数：写入 ESP 通讯参数缓存，让 ESP 运行时使用 */
+    (void)ESP_CommParams_LoadFromSD();
     return true;
 }
 
@@ -1428,6 +2274,24 @@ static void DeviceConnect_screen_event_handler(lv_event_t *e)
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
     if (!ui) return;
     g_dc_cfg_loaded = 0;
+    /* 进入界面立即同步一次“上报 UI 状态”，避免实际在上报但 UI 显示 Idle */
+    dc_sync_reporting_ui(ui);
+
+    /* 右上角：断电重连开关（从 SD 读取并刷新 UI） */
+    if (ui->DeviceConnect_btn_autorec && lv_obj_is_valid(ui->DeviceConnect_btn_autorec) &&
+        ui->DeviceConnect_lbl_autorec && lv_obj_is_valid(ui->DeviceConnect_lbl_autorec))
+    {
+        bool en = true, last = false;
+        (void)ESP_AutoReconnect_Read(&en, &last);
+        lv_label_set_text(ui->DeviceConnect_lbl_autorec, en ? "断电重连: 是" : "断电重连: 否");
+        lv_obj_set_style_bg_color(ui->DeviceConnect_btn_autorec,
+                                  lv_color_hex(en ? 0x3dfb00 : 0x999999),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(ui->DeviceConnect_btn_autorec, 255, LV_PART_MAIN);
+        lv_obj_set_style_text_color(ui->DeviceConnect_lbl_autorec,
+                                    lv_color_hex(en ? 0x2F35DA : 0xFFFFFF),
+                                    LV_PART_MAIN);
+    }
     /* 不在这里刷控制台，避免进入界面时大量文本更新导致重绘异常观感 */
     /* 去重：若已存在 timer，先删除再创建 */
     if (g_dc_cfg_timer) {
@@ -1436,6 +2300,37 @@ static void DeviceConnect_screen_event_handler(lv_event_t *e)
     }
     /* 延迟一帧，避免首帧渲染被 SD IO 阻塞 */
     g_dc_cfg_timer = lv_timer_create(DeviceConnect_cfg_load_timer_cb, 120, ui);
+}
+
+static void DeviceConnect_autorec_event_handler(lv_event_t *e)
+{
+    lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+    if (!ui) return;
+    lv_indev_wait_release(lv_indev_active());
+
+    bool en = true, last = false;
+    (void)ESP_AutoReconnect_Read(&en, &last);
+    en = !en;
+    bool ok = ESP_AutoReconnect_SetEnabled(en);
+
+    if (ui->DeviceConnect_lbl_autorec && lv_obj_is_valid(ui->DeviceConnect_lbl_autorec)) {
+        lv_label_set_text(ui->DeviceConnect_lbl_autorec, en ? "断电重连: 是" : "断电重连: 否");
+        lv_obj_set_style_text_color(ui->DeviceConnect_lbl_autorec,
+                                    lv_color_hex(en ? 0x2F35DA : 0xFFFFFF),
+                                    LV_PART_MAIN);
+    }
+    if (ui->DeviceConnect_btn_autorec && lv_obj_is_valid(ui->DeviceConnect_btn_autorec)) {
+        lv_obj_set_style_bg_color(ui->DeviceConnect_btn_autorec,
+                                  lv_color_hex(en ? 0x3dfb00 : 0x999999),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(ui->DeviceConnect_btn_autorec, 255, LV_PART_MAIN);
+    }
+
+    if (!ok) {
+        dc_console_append(ui, "AutoReconnect save failed (SD not ready?)");
+    } else {
+        dc_console_append(ui, en ? "AutoReconnect: ON (saved)" : "AutoReconnect: OFF (saved)");
+    }
 }
 
 static bool dc_require_cfg_loaded(lv_ui *ui)
@@ -1474,12 +2369,17 @@ static void dc_reset_following_steps(lv_ui *ui, esp_ui_cmd_t clicked_step)
     {
     case ESP_UI_CMD_WIFI:
         /* WiFi 之后：TCP/REG/REPORT 必须重做 */
+        g_dc_step_busy_tcp = 0;
+        g_dc_step_busy_reg = 0;
+        g_dc_step_busy_rep = 0;
         dc_step_reset_ui(ui->DeviceConnect_led_tcp, ui->DeviceConnect_lbl_stat_tcp, ui->DeviceConnect_btn_tcp, "未连接 (Idle)");
         dc_step_reset_ui(ui->DeviceConnect_led_reg, ui->DeviceConnect_lbl_stat_reg, ui->DeviceConnect_btn_reg, "未连接 (Idle)");
         dc_step_reset_ui(ui->DeviceConnect_led_report, ui->DeviceConnect_lbl_stat_report, ui->DeviceConnect_btn_report, "未连接 (Idle)");
         break;
     case ESP_UI_CMD_TCP:
         /* TCP 之后：REG/REPORT 必须重做 */
+        g_dc_step_busy_reg = 0;
+        g_dc_step_busy_rep = 0;
         dc_step_reset_ui(ui->DeviceConnect_led_reg, ui->DeviceConnect_lbl_stat_reg, ui->DeviceConnect_btn_reg, "未连接 (Idle)");
         dc_step_reset_ui(ui->DeviceConnect_led_report, ui->DeviceConnect_lbl_stat_report, ui->DeviceConnect_btn_report, "未连接 (Idle)");
         /* 清掉“可上报就绪”标志，强制重新注册 */
@@ -1487,10 +2387,15 @@ static void dc_reset_following_steps(lv_ui *ui, esp_ui_cmd_t clicked_step)
         break;
     case ESP_UI_CMD_REG:
         /* REG 之后：REPORT 必须重做（但 REG 本身会在 ESP 侧重新设置就绪） */
+        g_dc_step_busy_rep = 0;
         dc_step_reset_ui(ui->DeviceConnect_led_report, ui->DeviceConnect_lbl_stat_report, ui->DeviceConnect_btn_report, "未连接 (Idle)");
         break;
     case ESP_UI_CMD_AUTO_CONNECT:
         /* 一键连接：从头开始，清空所有步骤显示 */
+        g_dc_step_busy_wifi = 0;
+        g_dc_step_busy_tcp = 0;
+        g_dc_step_busy_reg = 0;
+        g_dc_step_busy_rep = 0;
         dc_step_reset_ui(ui->DeviceConnect_led_wifi, ui->DeviceConnect_lbl_stat_wifi, ui->DeviceConnect_btn_wifi, "未连接 (Idle)");
         dc_step_reset_ui(ui->DeviceConnect_led_tcp, ui->DeviceConnect_lbl_stat_tcp, ui->DeviceConnect_btn_tcp, "未连接 (Idle)");
         dc_step_reset_ui(ui->DeviceConnect_led_reg, ui->DeviceConnect_lbl_stat_reg, ui->DeviceConnect_btn_reg, "未连接 (Idle)");
@@ -1510,18 +2415,22 @@ static void dc_set_processing(lv_ui *ui, esp_ui_cmd_t step, const char *text)
     switch (step)
     {
     case ESP_UI_CMD_WIFI:
+        g_dc_step_busy_wifi = 1;
         dc_led_set_state(ui->DeviceConnect_led_wifi, 0xFFA500, true);
         lv_label_set_text(ui->DeviceConnect_lbl_stat_wifi, text ? text : "Processing...");
         break;
     case ESP_UI_CMD_TCP:
+        g_dc_step_busy_tcp = 1;
         dc_led_set_state(ui->DeviceConnect_led_tcp, 0xFFA500, true);
         lv_label_set_text(ui->DeviceConnect_lbl_stat_tcp, text ? text : "Processing...");
         break;
     case ESP_UI_CMD_REG:
+        g_dc_step_busy_reg = 1;
         dc_led_set_state(ui->DeviceConnect_led_reg, 0xFFA500, true);
         lv_label_set_text(ui->DeviceConnect_lbl_stat_reg, text ? text : "Processing...");
         break;
     case ESP_UI_CMD_REPORT_TOGGLE:
+        g_dc_step_busy_rep = 1;
         dc_led_set_state(ui->DeviceConnect_led_report, 0xFFA500, true);
         lv_label_set_text(ui->DeviceConnect_lbl_stat_report, text ? text : "Uploading...");
         break;
@@ -1541,17 +2450,20 @@ static void dc_set_done(lv_ui *ui, esp_ui_cmd_t step, bool ok)
     switch (step)
     {
     case ESP_UI_CMD_WIFI:
+        g_dc_step_busy_wifi = 0;
         dc_led_set_state(ui->DeviceConnect_led_wifi, ok ? c_ok : c_err, true);
         lv_label_set_text(ui->DeviceConnect_lbl_stat_wifi, ok ? "WiFi Connected" : "WiFi Failed");
         /* WiFi 按钮永远可再次点击（除非已开始上报） */
         lv_obj_clear_state(ui->DeviceConnect_btn_wifi, LV_STATE_DISABLED);
         break;
     case ESP_UI_CMD_TCP:
+        g_dc_step_busy_tcp = 0;
         dc_led_set_state(ui->DeviceConnect_led_tcp, ok ? c_ok : c_err, true);
         lv_label_set_text(ui->DeviceConnect_lbl_stat_tcp, ok ? "TCP Linked" : "TCP Failed");
         lv_obj_clear_state(ui->DeviceConnect_btn_tcp, LV_STATE_DISABLED);
         break;
     case ESP_UI_CMD_REG:
+        g_dc_step_busy_reg = 0;
         dc_led_set_state(ui->DeviceConnect_led_reg, ok ? c_ok : c_err, true);
         lv_label_set_text(ui->DeviceConnect_lbl_stat_reg, ok ? "Registered" : "Register Failed");
         lv_obj_clear_state(ui->DeviceConnect_btn_reg, LV_STATE_DISABLED);
@@ -1572,6 +2484,7 @@ static void dc_set_done(lv_ui *ui, esp_ui_cmd_t step, bool ok)
         break;
     case ESP_UI_CMD_REPORT_TOGGLE:
     {
+        g_dc_step_busy_rep = 0;
         bool reporting = ESP_UI_IsReporting();
         if (!ok && !reporting)
         {
@@ -1665,12 +2578,15 @@ static void dc_timer_cb(lv_timer_t *t)
 
     dc_msg_t m;
     /* 每次最多处理 N 条消息，避免某次日志爆发导致 LVGL 卡顿/假死 */
-    uint32_t budget = 6;
+    uint32_t budget = g_dc_auto_running ? 40u : 16u;
     while (budget-- && osMessageQueueGet(g_dc_q, &m, NULL, 0U) == osOK)
     {
         if (m.type == DC_MSG_LOG)
         {
-            dc_console_append(g_dc_ui, m.text);
+            /* 自动流程中优先处理“步骤结果”，日志会明显拖慢状态刷新；这里丢弃日志以保证 UI 及时推进。 */
+            if (!g_dc_auto_running) {
+                dc_console_append(g_dc_ui, m.text);
+            }
         }
         else if (m.type == DC_MSG_STEP_DONE)
         {
@@ -1704,6 +2620,9 @@ static void dc_timer_cb(lv_timer_t *t)
             }
         }
     }
+
+    /* 兜底：即使步骤消息被日志淹没或丢失，也保证“上报状态”能实时反映到 UI 上 */
+    dc_sync_reporting_ui(g_dc_ui);
 }
 
 static void DeviceConnect_auto_event_handler(lv_event_t *e)
@@ -1717,6 +2636,8 @@ static void DeviceConnect_auto_event_handler(lv_event_t *e)
         return;
     }
     if (ESP_UI_IsReporting()) {
+        /* 若 UI 与实际上报状态不同步，先同步，确保用户能看到“停止上报”按钮 */
+        dc_sync_reporting_ui(ui);
         dc_console_append(ui, "Reporting active, stop reporting first.");
         return;
     }
@@ -1731,6 +2652,9 @@ static void DeviceConnect_auto_event_handler(lv_event_t *e)
 
     dc_console_append(ui, "Auto sequence started...");
     dc_set_processing(ui, ESP_UI_CMD_WIFI, "Processing...");
+    /* 关键：先强制刷新一帧，让“Processing...”立刻可见，再交给 ESP 任务执行耗时步骤 */
+    lv_obj_update_layout(ui->DeviceConnect);
+    lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_AUTO_CONNECT);
 }
 
@@ -1744,6 +2668,7 @@ static void DeviceConnect_wifi_event_handler(lv_event_t *e)
         return;
     }
     if (ESP_UI_IsReporting()) {
+        dc_sync_reporting_ui(ui);
         dc_console_append(ui, "Reporting active, stop reporting first.");
         return;
     }
@@ -1755,6 +2680,8 @@ static void DeviceConnect_wifi_event_handler(lv_event_t *e)
     lv_obj_add_state(ui->DeviceConnect_btn_wifi, LV_STATE_DISABLED);
     dc_set_processing(ui, ESP_UI_CMD_WIFI, "Processing...");
     dc_console_append(ui, "Executing WIFI...");
+    lv_obj_update_layout(ui->DeviceConnect);
+    lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_WIFI);
 }
 
@@ -1768,6 +2695,7 @@ static void DeviceConnect_tcp_event_handler(lv_event_t *e)
         return;
     }
     if (ESP_UI_IsReporting()) {
+        dc_sync_reporting_ui(ui);
         dc_console_append(ui, "Reporting active, stop reporting first.");
         return;
     }
@@ -1779,6 +2707,8 @@ static void DeviceConnect_tcp_event_handler(lv_event_t *e)
     lv_obj_add_state(ui->DeviceConnect_btn_tcp, LV_STATE_DISABLED);
     dc_set_processing(ui, ESP_UI_CMD_TCP, "Processing...");
     dc_console_append(ui, "Executing TCP...");
+    lv_obj_update_layout(ui->DeviceConnect);
+    lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_TCP);
 }
 
@@ -1792,6 +2722,7 @@ static void DeviceConnect_reg_event_handler(lv_event_t *e)
         return;
     }
     if (ESP_UI_IsReporting()) {
+        dc_sync_reporting_ui(ui);
         dc_console_append(ui, "Reporting active, stop reporting first.");
         return;
     }
@@ -1808,6 +2739,8 @@ static void DeviceConnect_reg_event_handler(lv_event_t *e)
     lv_obj_add_state(ui->DeviceConnect_btn_reg, LV_STATE_DISABLED);
     dc_set_processing(ui, ESP_UI_CMD_REG, "Processing...");
     dc_console_append(ui, "Executing REG...");
+    lv_obj_update_layout(ui->DeviceConnect);
+    lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_REG);
 }
 
@@ -1822,6 +2755,8 @@ static void DeviceConnect_report_event_handler(lv_event_t *e)
     }
     lv_obj_add_state(ui->DeviceConnect_btn_report, LV_STATE_DISABLED);
     dc_set_processing(ui, ESP_UI_CMD_REPORT_TOGGLE, "Uploading...");
+    lv_obj_update_layout(ui->DeviceConnect);
+    lv_refr_now(NULL);
     (void)ESP_UI_SendCmd(ESP_UI_CMD_REPORT_TOGGLE);
 }
 
@@ -1829,6 +2764,10 @@ void events_init_DeviceConnect(lv_ui *ui)
 {
     lv_obj_add_event_cb(ui->DeviceConnect_btn_back, DeviceConnect_back_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_auto, DeviceConnect_auto_event_handler, LV_EVENT_CLICKED, ui);
+
+    if (ui->DeviceConnect_btn_autorec) {
+        lv_obj_add_event_cb(ui->DeviceConnect_btn_autorec, DeviceConnect_autorec_event_handler, LV_EVENT_CLICKED, ui);
+    }
 
     lv_obj_add_event_cb(ui->DeviceConnect_btn_wifi, DeviceConnect_wifi_event_handler, LV_EVENT_CLICKED, ui);
     lv_obj_add_event_cb(ui->DeviceConnect_btn_tcp, DeviceConnect_tcp_event_handler, LV_EVENT_CLICKED, ui);
@@ -1845,7 +2784,7 @@ void events_init_DeviceConnect(lv_ui *ui)
     ESP_UI_SetHooks(dc_post_log_from_esp, NULL, dc_post_step_from_esp, NULL);
 
     if (!g_dc_timer)
-        g_dc_timer = lv_timer_create(dc_timer_cb, 50, NULL);
+        g_dc_timer = lv_timer_create(dc_timer_cb, 200, NULL);
 
     /* “重新注册倒计时”标签：显示在注册状态右侧 */
     if (!g_dc_lbl_reg_countdown && ui->DeviceConnect_cont_panel && lv_obj_is_valid(ui->DeviceConnect_cont_panel))

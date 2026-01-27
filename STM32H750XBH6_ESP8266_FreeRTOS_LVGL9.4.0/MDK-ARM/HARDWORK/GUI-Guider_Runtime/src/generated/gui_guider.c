@@ -119,6 +119,7 @@ void init_scr_del_flag(lv_ui *ui)
     ui->Main_3_del = true;
     ui->WifiConfig_del = true;
     ui->ServerConfig_del = true;
+    ui->ParamConfig_del = true;
     ui->DeviceConnect_del = true;
 }
 

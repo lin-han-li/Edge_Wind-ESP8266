@@ -3,7 +3,7 @@
  * Bpp: 4
  * Opts: --no-compress --format lvgl --font C:\Users\pengjianzhong\Desktop\Edge_Wind_System+ESP8266\STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0\MDK-ARM\HARDWORK\EdgeWind_UI\fonts\SourceHanSerif.otf --bpp 4 --size 14 --symbols 实时监控
 数据分析
-设备管理
+设备连接
 参数设置
 历史记录
 系统诊断

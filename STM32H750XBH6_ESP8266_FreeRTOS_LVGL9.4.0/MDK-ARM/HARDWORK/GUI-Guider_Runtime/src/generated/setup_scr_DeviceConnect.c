@@ -92,6 +92,25 @@ void setup_scr_DeviceConnect(lv_ui *ui)
     lv_obj_set_style_text_font(ui->DeviceConnect_lbl_title, gui_assets_get_font_30(), LV_PART_MAIN);
     lv_obj_align(ui->DeviceConnect_lbl_title, LV_ALIGN_LEFT_MID, 20, 0);
 
+    /* 右上角：断电重连 是否（设置按钮） */
+    ui->DeviceConnect_btn_autorec = lv_button_create(header);
+    lv_obj_set_size(ui->DeviceConnect_btn_autorec, 180, 36);
+    lv_obj_align(ui->DeviceConnect_btn_autorec, LV_ALIGN_RIGHT_MID, -20, 0);
+    lv_obj_set_style_radius(ui->DeviceConnect_btn_autorec, 18, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ui->DeviceConnect_btn_autorec, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui->DeviceConnect_btn_autorec, 200, LV_PART_MAIN);
+    lv_obj_set_style_border_width(ui->DeviceConnect_btn_autorec, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(ui->DeviceConnect_btn_autorec, 8, LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(ui->DeviceConnect_btn_autorec, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(ui->DeviceConnect_btn_autorec, 30, LV_PART_MAIN);
+    lv_obj_set_style_shadow_offset_y(ui->DeviceConnect_btn_autorec, 2, LV_PART_MAIN);
+
+    ui->DeviceConnect_lbl_autorec = lv_label_create(ui->DeviceConnect_btn_autorec);
+    lv_label_set_text(ui->DeviceConnect_lbl_autorec, "断电重连: 是");
+    lv_obj_set_style_text_font(ui->DeviceConnect_lbl_autorec, gui_assets_get_font_16(), LV_PART_MAIN);
+    lv_obj_set_style_text_color(ui->DeviceConnect_lbl_autorec, lv_color_hex(0x2F35DA), LV_PART_MAIN);
+    lv_obj_center(ui->DeviceConnect_lbl_autorec);
+
     ui->DeviceConnect_cont_panel = lv_obj_create(ui->DeviceConnect);
     lv_obj_set_pos(ui->DeviceConnect_cont_panel, 50, 60);
     lv_obj_set_size(ui->DeviceConnect_cont_panel, 700, 260);

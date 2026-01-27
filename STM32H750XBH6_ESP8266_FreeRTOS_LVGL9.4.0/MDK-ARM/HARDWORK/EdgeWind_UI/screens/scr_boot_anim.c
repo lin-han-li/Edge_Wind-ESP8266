@@ -920,6 +920,9 @@ static void enter_btn_click_cb(lv_event_t *e)
 static void start_zoomout_phase(void)
 {
     /* 不再执行淡出动画，改为显示"进入系统"按钮 */
+
+    /* ⚠️需求：加载完开机动画但还没有弹出“进入系统”按钮时，若需要断电重连则先触发自动连接上报 */
+    edgewind_ui_on_before_enter_button();
     
     /* 隐藏进度条 */
     lv_anim_t hide_progress;

@@ -12,9 +12,14 @@
  */
 
 #include "esp8266.h"
+#include "ADS131A04_EVB.h"
 #include "usart.h"
 #include "arm_math.h"
 #include "cmsis_os.h"
+#include "fatfs.h"
+#include "diskio.h"
+#include "bsp_driver_sd.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -22,7 +27,7 @@
 
 /* 引用 usart.c 中定义的句柄 */
 extern UART_HandleTypeDef huart2;
-
+#define ESP_PRINT_WAVEFORM_POINTS 0
 /* =================================================================================
  * 浮点数输出安全：
  * - C 库 printf/sprintf 对 NaN/Inf 往往会输出 "nan"/"inf"（小写），这会导致 Python json.loads 直接解析失败，
@@ -37,6 +42,32 @@ static inline float ESP_SafeFloat(float v)
     if (v > 1.0e20f || v < -1.0e20f)
         return 0.0f;
     return v;
+}
+
+/* ========= 上报数值格式（无浮点） =========
+ * 用户要求：采集数据 *200 后按整数上传，JSON 里不再出现浮点数。
+ * 说明：内部仍用 float 参与 FFT/计算，仅在“序列化到 JSON”阶段做定点缩放。 */
+#ifndef ESP_UPLOAD_SCALE
+#define ESP_UPLOAD_SCALE 200
+#endif
+
+/* 串口打印开关（默认关闭，避免影响 UI/上报性能）
+ * 需求：打印“瞬时值(每点)”：printf("%f,%f,%f,%f", ch1,ch2,ch3,ch4)
+ * 注意：若 STEP=1 且采样点很多，会显著占用 CPU/串口带宽，调试用即可。 */
+#ifndef ESP_PRINT_WAVEFORM_POINTS
+#define ESP_PRINT_WAVEFORM_POINTS 0
+#endif
+
+/* 打印步进：1=每点都打印；2=每 2 点打印一次... */
+#ifndef ESP_PRINT_POINT_STEP
+#define ESP_PRINT_POINT_STEP 1
+#endif
+
+static inline int32_t ESP_FloatToI32Scaled(float v)
+{
+    float x = ESP_SafeFloat(v) * (float)ESP_UPLOAD_SCALE;
+    /* 四舍五入到整数 */
+    return (int32_t)((x >= 0.0f) ? (x + 0.5f) : (x - 0.5f));
 }
 
 /* 安全追加格式化字符串到缓冲区（防止 http_packet_buf 越界导致“偶发坏帧/服务器解析失败/节点重连”） */
@@ -185,6 +216,7 @@ void ESP_Config_Apply(const SystemConfig_t *cfg)
 /* DSP 相关变量：用于 FFT 计算 */
 static arm_rfft_fast_instance_f32 S;
 static uint8_t fft_initialized = 0;
+static float32_t fft_input_buf[WAVEFORM_POINTS];  // FFT 输入缓冲（避免破坏原波形）
 static float32_t fft_output_buf[WAVEFORM_POINTS]; // FFT 输出复数数组
 static float32_t fft_mag_buf[WAVEFORM_POINTS];    // FFT 幅值数组
 
@@ -222,7 +254,8 @@ static void ESP_Log(const char *format, ...);
 static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout);
 static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char *reply2, uint32_t timeout);
 static void ESP_Clear_Error_Flags(void);
-static int Helper_FloatArray_To_String(char *dest, const char *end, float *data, int count, int step);
+static int Helper_FloatArray_To_String(char **pp, const char *end, const float *data, int count, int step);
+static int Helper_FloatArray1dp_To_String(char **pp, const char *end, const float *data, int count, int step);
 static void ESP_Exit_Transparent_Mode(void);
 static uint8_t ESP_Exit_Transparent_Mode_Strict(uint32_t timeout_ms);
 static void ESP_Uart2_Drain(uint32_t ms);
@@ -230,7 +263,9 @@ static uint8_t ESP_Wait_Keyword(const char *kw, uint32_t timeout_ms);
 static void ESP_SoftReconnect(void);
 static uint8_t ESP_TryReuseTransparent(void);
 static void ESP_HardReset(void);
+#if 0
 static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, float noise_level);
+#endif
 static UART_HandleTypeDef *ESP_GetLogUart(void);
 static void ESP_Log_RxBuf(const char *tag);
 static void ESP_SetFaultCode(const char *code);
@@ -290,11 +325,36 @@ static uint8_t g_boot_hardreset_done = 0;        // 启动时是否已执行过�
 static volatile uint8_t g_waiting_http_response = 0;
 static volatile uint32_t g_waiting_http_tick = 0;
 
-/* 发送门控超时：用于防止“没识别到 HTTP/1.1 就永久断流”。
- * 之前 250ms 在实际网络/服务器负载下偏小，会导致频繁“放行继续发送”并放大串口压力。 */
-#ifndef ESP_HTTP_GATE_TIMEOUT_MS
-#define ESP_HTTP_GATE_TIMEOUT_MS 1200u
-#endif
+/* 分段发送状态（仅用于 ESP_Post_Data 的大包上报） */
+typedef struct {
+    uint32_t total_len;
+    uint32_t offset;
+    uint32_t next_tick;
+    uint8_t  active;
+} esp_tx_chunk_t;
+static esp_tx_chunk_t g_tx_chunk = {0};
+
+/* 非分段 HTTP 发送链状态：header DMA -> body DMA */
+typedef enum {
+    ESP_HTTP_TX_IDLE = 0,
+    ESP_HTTP_TX_HEADER_INFLIGHT = 1,
+    ESP_HTTP_TX_BODY_INFLIGHT = 2,
+} esp_http_tx_phase_t;
+static volatile esp_http_tx_phase_t g_http_tx_phase = ESP_HTTP_TX_IDLE;
+static uint8_t *g_http_tx_body_ptr = NULL;
+static uint32_t g_http_tx_body_len = 0;
+
+/* ================= 通讯参数（运行时缓存） =================
+ * 由 SD 文件 0:/config/ui_param.cfg 加载；若未加载则使用宏默认值。
+ * 这些值会被 ESP_Post_Data/ESP_Post_Heartbeat/自恢复逻辑实时读取。
+ */
+static volatile uint32_t g_comm_heartbeat_ms    = (uint32_t)ESP_HEARTBEAT_INTERVAL_MS;
+static volatile uint32_t g_comm_min_interval_ms = (uint32_t)ESP_MIN_SEND_INTERVAL_MS;
+static volatile uint32_t g_comm_http_timeout_ms = (uint32_t)ESP_HTTP_TIMEOUT_MS_DEFAULT;
+static volatile uint32_t g_comm_hardreset_sec   = (uint32_t)ESP_NO_SERVER_RX_HARDRESET_SEC;
+static volatile uint32_t g_comm_wave_step       = (uint32_t)WAVEFORM_SEND_STEP;
+static volatile uint32_t g_comm_chunk_kb        = (uint32_t)ESP_CHUNK_KB_DEFAULT;
+static volatile uint32_t g_comm_chunk_delay_ms  = (uint32_t)ESP_CHUNK_DELAY_MS_DEFAULT;
 
 /* USART2 流式接收：DMA Circular + IDLE/TC/HT 回调中按“写指针”增量取数据，避免每次回调停/启 DMA 产生空窗导致 ORE。 */
 static volatile uint16_t g_stream_rx_last_pos = 0;
@@ -304,6 +364,354 @@ static uint32_t g_last_heartbeat_tick = 0;
  * 当处于 AT 模式（使用阻塞式 HAL_UART_Receive）时，必须禁止 DMA 中断回调逻辑介入。
  * 否则 HAL_UARTEx_RxEventCallback 会打断 HAL_UART_Receive，导致状态机错乱死锁。 */
 static volatile uint8_t g_uart2_at_mode = 0;
+
+/* ================= ESP 通讯参数 API（运行时可配置） ================= */
+uint32_t ESP_CommParams_HeartbeatMs(void)    { return (uint32_t)g_comm_heartbeat_ms; }
+uint32_t ESP_CommParams_MinIntervalMs(void) { return (uint32_t)g_comm_min_interval_ms; }
+uint32_t ESP_CommParams_HttpTimeoutMs(void) { return (uint32_t)g_comm_http_timeout_ms; }
+uint32_t ESP_CommParams_HardResetSec(void)  { return (uint32_t)g_comm_hardreset_sec; }
+uint32_t ESP_CommParams_WaveStep(void)      { return (uint32_t)g_comm_wave_step; }
+uint32_t ESP_CommParams_ChunkKb(void)       { return (uint32_t)g_comm_chunk_kb; }
+uint32_t ESP_CommParams_ChunkDelayMs(void)  { return (uint32_t)g_comm_chunk_delay_ms; }
+
+void ESP_CommParams_Get(ESP_CommParams_t *out)
+{
+    if (!out) return;
+    out->heartbeat_ms    = (uint32_t)g_comm_heartbeat_ms;
+    out->min_interval_ms = (uint32_t)g_comm_min_interval_ms;
+    out->http_timeout_ms = (uint32_t)g_comm_http_timeout_ms;
+    out->hardreset_sec   = (uint32_t)g_comm_hardreset_sec;
+    out->wave_step       = (uint32_t)g_comm_wave_step;
+    out->chunk_kb        = (uint32_t)g_comm_chunk_kb;
+    out->chunk_delay_ms  = (uint32_t)g_comm_chunk_delay_ms;
+}
+
+static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+void ESP_CommParams_Apply(const ESP_CommParams_t *p)
+{
+    if (!p) return;
+    /* 约束：避免极端值导致系统抖动或“永不发送” */
+    uint32_t hb    = clamp_u32(p->heartbeat_ms,    200u, 600000u);
+    uint32_t minit = clamp_u32(p->min_interval_ms, 0u,   600000u);
+    uint32_t http  = clamp_u32(p->http_timeout_ms, 100u, 600000u);
+    uint32_t hrs   = clamp_u32(p->hardreset_sec,   5u,   3600u);
+    uint32_t step  = clamp_u32(p->wave_step,       1u,   64u);
+    uint32_t ckb   = p->chunk_kb;
+    if (ckb > 16u) ckb = 16u; /* 允许 0 表示“关闭分段” */
+    uint32_t cdly  = clamp_u32(p->chunk_delay_ms,  0u,   200u);
+
+    g_comm_heartbeat_ms    = hb;
+    g_comm_min_interval_ms = minit;
+    g_comm_http_timeout_ms = http;
+    g_comm_hardreset_sec   = hrs;
+    g_comm_wave_step       = step;
+    g_comm_chunk_kb        = ckb;
+    g_comm_chunk_delay_ms  = cdly;
+
+#if (ESP_DEBUG)
+    ESP_Log("[PARAM] apply hb=%lums min=%lums http=%lums hrs=%lus step=%lu chunk=%luKB delay=%lums\r\n",
+            (unsigned long)hb, (unsigned long)minit, (unsigned long)http, (unsigned long)hrs,
+            (unsigned long)step, (unsigned long)ckb, (unsigned long)cdly);
+#endif
+}
+
+static void cfg_rstrip(char *s)
+{
+    if (!s) return;
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\r' || s[n - 1] == '\n' || s[n - 1] == ' ' || s[n - 1] == '\t')) {
+        s[n - 1] = '\0';
+        n--;
+    }
+}
+
+static bool cfg_parse_u32_relaxed(const char *s, uint32_t *out)
+{
+    if (!out) return false;
+    if (!s) return false;
+    /* 容错：允许前面多余的 '=' 或空白（例如 "==60" / "=60"） */
+    while (*s == '=' || *s == ' ' || *s == '\t')
+        s++;
+    if (!*s) return false;
+    char *end = NULL;
+    unsigned long v = strtoul(s, &end, 10);
+    if (end == s) return false;
+    *out = (uint32_t)v;
+    return true;
+}
+
+/* 上电/进入界面时加载一次：仅影响通讯参数缓存，不影响 WiFi/Server/SystemConfig_t */
+bool ESP_CommParams_LoadFromSD(void)
+{
+    /* 避免与 QSPI/SD 同步竞争（该标志在 GUI_Assets_SyncFromSD 期间置位） */
+    extern volatile uint8_t g_qspi_sd_sync_in_progress;
+    if (g_qspi_sd_sync_in_progress) {
+        return false;
+    }
+
+    /* 确保 FatFs 已初始化 */
+    if (SDPath[0] == '\0') {
+        MX_FATFS_Init();
+    }
+
+    /* 初始化磁盘 */
+    (void)disk_initialize(0);
+
+    /* 等待卡就绪（短超时） */
+    uint32_t t0 = HAL_GetTick();
+    while ((HAL_GetTick() - t0) < 200U) {
+        if (BSP_SD_GetCardState() == SD_TRANSFER_OK) break;
+        osDelay(5);
+    }
+
+    if (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) != FR_OK) {
+        return false;
+    }
+
+    FIL fil;
+    if (f_open(&fil, "0:/config/ui_param.cfg", FA_READ) != FR_OK) {
+        return false;
+    }
+
+    ESP_CommParams_t p;
+    ESP_CommParams_Get(&p); /* 先取当前值作为兜底 */
+
+    char line[160];
+    while (f_gets(line, sizeof(line), &fil)) {
+        cfg_rstrip(line);
+        if (strncmp(line, "HEARTBEAT_MS=", 13) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 13, &v)) p.heartbeat_ms = v;
+        } else if (strncmp(line, "SENDLIMIT_MS=", 13) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 13, &v)) p.min_interval_ms = v;
+        } else if (strncmp(line, "HTTP_TIMEOUT_MS=", 16) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 16, &v)) p.http_timeout_ms = v;
+        } else if (strncmp(line, "HARDRESET_S=", 11) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 11, &v)) p.hardreset_sec = v;
+        } else if (strncmp(line, "DOWNSAMPLE_STEP=", 16) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 16, &v)) p.wave_step = v;
+        } else if (strncmp(line, "CHUNK_KB=", 9) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 9, &v)) p.chunk_kb = v;
+        } else if (strncmp(line, "CHUNK_DELAY_MS=", 15) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 15, &v)) p.chunk_delay_ms = v;
+        }
+    }
+    (void)f_close(&fil);
+
+    ESP_CommParams_Apply(&p);
+    return true;
+}
+
+/* ================= 断电重连/上报状态持久化（SD 标志位） ================= */
+#define UI_CFG_DIR               "0:/config"
+#define UI_WIFI_CFG_FILE         "0:/config/ui_wifi.cfg"
+#define UI_SERVER_CFG_FILE       "0:/config/ui_server.cfg"
+#define UI_AUTOREPORT_CFG_FILE   "0:/config/ui_autoreport.cfg"
+#define UI_AUTOREPORT_TMP_FILE   "0:/config/.ui_autoreport.cfg.tmp"
+
+static bool esp_sd_try_mount(uint32_t wait_ms)
+{
+    /* 避免与 QSPI/SD 同步竞争（该标志在 GUI_Assets_SyncFromSD 期间置位） */
+    extern volatile uint8_t g_qspi_sd_sync_in_progress;
+    if (g_qspi_sd_sync_in_progress) {
+        return false;
+    }
+
+    if (SDPath[0] == '\0') {
+        MX_FATFS_Init();
+    }
+    (void)disk_initialize(0);
+
+    uint32_t t0 = HAL_GetTick();
+    while ((HAL_GetTick() - t0) < wait_ms) {
+        if (BSP_SD_GetCardState() == SD_TRANSFER_OK) break;
+        osDelay(5);
+    }
+
+    return (f_mount(&SDFatFS, (TCHAR const *)SDPath, 1) == FR_OK);
+}
+
+static FRESULT esp_cfg_ensure_dir(void)
+{
+    FILINFO fno;
+    FRESULT res = f_stat(UI_CFG_DIR, &fno);
+    if (res == FR_OK) {
+        return FR_OK;
+    }
+    res = f_mkdir(UI_CFG_DIR);
+    if (res == FR_EXIST) {
+        return FR_OK;
+    }
+    return res;
+}
+
+static bool esp_autoreport_write(bool auto_reconnect_en, bool last_reporting)
+{
+    if (!esp_sd_try_mount(200U)) {
+        return false;
+    }
+    if (esp_cfg_ensure_dir() != FR_OK) {
+        return false;
+    }
+
+    FIL fil;
+    if (f_open(&fil, UI_AUTOREPORT_TMP_FILE, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+        return false;
+    }
+
+    char buf[96];
+    int n = snprintf(buf, sizeof(buf),
+                     "AUTO_RECONNECT=%u\r\n"
+                     "LAST_REPORTING=%u\r\n",
+                     auto_reconnect_en ? 1u : 0u,
+                     last_reporting ? 1u : 0u);
+    if (n < 0) {
+        (void)f_close(&fil);
+        (void)f_unlink(UI_AUTOREPORT_TMP_FILE);
+        return false;
+    }
+
+    UINT bw = 0;
+    (void)f_write(&fil, buf, (UINT)strlen(buf), &bw);
+    (void)f_close(&fil);
+
+    /* 原子替换：先删旧文件，再 rename 临时文件 */
+    (void)f_unlink(UI_AUTOREPORT_CFG_FILE);
+    FRESULT r = f_rename(UI_AUTOREPORT_TMP_FILE, UI_AUTOREPORT_CFG_FILE);
+    if (r != FR_OK) {
+        (void)f_unlink(UI_AUTOREPORT_TMP_FILE);
+        return false;
+    }
+    return true;
+}
+
+bool ESP_AutoReconnect_Read(bool *auto_reconnect_en, bool *last_reporting)
+{
+    /* 默认值：开启“断电重连”功能，但上次上报默认=否（这样首次不会自动连接） */
+    bool en = true;
+    bool last = false;
+
+    if (!esp_sd_try_mount(120U)) {
+        if (auto_reconnect_en) *auto_reconnect_en = en;
+        if (last_reporting) *last_reporting = last;
+        return false;
+    }
+
+    FIL fil;
+    if (f_open(&fil, UI_AUTOREPORT_CFG_FILE, FA_READ) != FR_OK) {
+        if (auto_reconnect_en) *auto_reconnect_en = en;
+        if (last_reporting) *last_reporting = last;
+        return false;
+    }
+
+    char line[96];
+    while (f_gets(line, sizeof(line), &fil)) {
+        cfg_rstrip(line);
+        if (strncmp(line, "AUTO_RECONNECT=", 15) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 15, &v)) en = (v != 0U);
+        } else if (strncmp(line, "LAST_REPORTING=", 15) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 15, &v)) last = (v != 0U);
+        }
+    }
+    (void)f_close(&fil);
+
+    if (auto_reconnect_en) *auto_reconnect_en = en;
+    if (last_reporting) *last_reporting = last;
+    return true;
+}
+
+bool ESP_AutoReconnect_SetEnabled(bool auto_reconnect_en)
+{
+    bool cur_en = true, cur_last = false;
+    (void)ESP_AutoReconnect_Read(&cur_en, &cur_last);
+    return esp_autoreport_write(auto_reconnect_en, cur_last);
+}
+
+bool ESP_AutoReconnect_SetLastReporting(bool last_reporting)
+{
+    bool cur_en = true, cur_last = false;
+    (void)ESP_AutoReconnect_Read(&cur_en, &cur_last);
+    return esp_autoreport_write(cur_en, last_reporting);
+}
+
+/* 启动前置：从 UI 保存的 SD 文件读取 WiFi/Server 配置并应用 */
+bool ESP_Config_LoadFromSD_UIFiles(void)
+{
+    if (!esp_sd_try_mount(120U)) {
+        return false;
+    }
+
+    /* 以当前配置为基底（若未加载则会先装载默认值） */
+    SystemConfig_t cfg = *ESP_Config_Get();
+    bool any = false;
+
+    /* WiFi */
+    {
+        FIL fil;
+        if (f_open(&fil, UI_WIFI_CFG_FILE, FA_READ) == FR_OK) {
+            char line[160];
+            while (f_gets(line, sizeof(line), &fil)) {
+                cfg_rstrip(line);
+                if (strncmp(line, "SSID=", 5) == 0) {
+                    strncpy(cfg.wifi_ssid, line + 5, sizeof(cfg.wifi_ssid) - 1);
+                    cfg.wifi_ssid[sizeof(cfg.wifi_ssid) - 1] = '\0';
+                } else if (strncmp(line, "PWD=", 4) == 0) {
+                    strncpy(cfg.wifi_password, line + 4, sizeof(cfg.wifi_password) - 1);
+                    cfg.wifi_password[sizeof(cfg.wifi_password) - 1] = '\0';
+                }
+            }
+            (void)f_close(&fil);
+            any = true;
+        }
+    }
+
+    /* Server */
+    {
+        FIL fil;
+        if (f_open(&fil, UI_SERVER_CFG_FILE, FA_READ) == FR_OK) {
+            char line[160];
+            while (f_gets(line, sizeof(line), &fil)) {
+                cfg_rstrip(line);
+                if (strncmp(line, "IP=", 3) == 0) {
+                    strncpy(cfg.server_ip, line + 3, sizeof(cfg.server_ip) - 1);
+                    cfg.server_ip[sizeof(cfg.server_ip) - 1] = '\0';
+                } else if (strncmp(line, "PORT=", 5) == 0) {
+                    uint32_t v;
+                    if (cfg_parse_u32_relaxed(line + 5, &v) && v > 0U && v <= 65535U) {
+                        cfg.server_port = (uint16_t)v;
+                    }
+                } else if (strncmp(line, "ID=", 3) == 0) {
+                    strncpy(cfg.node_id, line + 3, sizeof(cfg.node_id) - 1);
+                    cfg.node_id[sizeof(cfg.node_id) - 1] = '\0';
+                } else if (strncmp(line, "LOC=", 4) == 0) {
+                    strncpy(cfg.node_location, line + 4, sizeof(cfg.node_location) - 1);
+                    cfg.node_location[sizeof(cfg.node_location) - 1] = '\0';
+                }
+            }
+            (void)f_close(&fil);
+            any = true;
+        }
+    }
+
+    if (any) {
+        ESP_Config_Apply(&cfg);
+    }
+    return any;
+}
 
 // =================================================================================
 // 工具函数实现
@@ -358,6 +766,9 @@ static void ESP_ForceStop_DMA(void)
     g_usart2_rx_started = 0;
     g_waiting_http_response = 0;
     g_stream_rx_last_pos = 0;
+    g_http_tx_phase = ESP_HTTP_TX_IDLE;
+    g_http_tx_body_ptr = NULL;
+    g_http_tx_body_len = 0;
 }
 
 /**
@@ -600,7 +1011,8 @@ void ESP_Init(void)
     strncpy(node_channels[3].unit, "mA", 7);
 }
 
-/* 通用波形生成与FFT计算函数 */
+#if 0
+/* 通用波形生成与FFT计算函数（已停用：改为 ADS131A04 真实采样） */
 static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, float noise_level)
 {
     static float time_t = 0.0f;
@@ -661,21 +1073,89 @@ static void Process_Channel_Data(int ch_id, float base_dc, float ripple_amp, flo
     if (ch_id == 3)
         time_t += 0.05f; // 时间步进
 }
+#endif
 
 void ESP_Update_Data_And_FFT(void)
 {
-    // 更新 4 个通道的数据
-    // Ch0: 母线+ (375V, 纹波5V, 噪声2V)
-    Process_Channel_Data(0, 375.0f, 5.0f, 2.0f);
+    static uint32_t last_calc_tick = 0;
+    static uint8_t last_ready = 0;
+    uint32_t min_itv = ESP_CommParams_MinIntervalMs();
+    uint32_t now = HAL_GetTick();
 
-    // Ch1: 母线- (375V, 纹波5V, 噪声2V)
-    Process_Channel_Data(1, 375.0f, 5.0f, 2.0f);
+    if (!fft_initialized)
+    {
+        arm_rfft_fast_init_f32(&S, WAVEFORM_POINTS);
+        fft_initialized = 1;
+    }
 
-    // Ch2: 负载电流 (12.5A, 纹波3A, 噪声0.5A)
-    Process_Channel_Data(2, 12.5f, 3.0f, 0.5f);
+    uint8_t ready = 0;
+    float (*src)[WAVEFORM_POINTS] = NULL;
+    if (ADS131A04_flag == 1 && last_ready != 1)
+    {
+        ready = 1;
+        src = ADSA_B;
+    }
+    else if (ADS131A04_flag2 == 2 && last_ready != 2)
+    {
+        ready = 2;
+        src = ADSA_B2;
+    }
+    else
+    {
+        return;
+    }
 
-    // Ch3: 漏电流 (20mA, 纹波5mA, 噪声2mA)
-    Process_Channel_Data(3, 20.0f, 5.0f, 2.0f);
+    if (min_itv > 0u)
+    {
+        if ((now - last_calc_tick) < min_itv)
+        {
+            return;
+        }
+    }
+    last_calc_tick = now;
+
+    double sum0 = 0.0, sum1 = 0.0, sum2 = 0.0, sum3 = 0.0;
+    for (int i = 0; i < WAVEFORM_POINTS; i++)
+    {
+        float v0 = src[0][i];
+        float v1 = src[1][i];
+        float v2 = src[2][i];
+        float v3 = src[3][i];
+#if (ESP_PRINT_WAVEFORM_POINTS)
+        /* 瞬时值(每点)：默认每点都打；可通过 ESP_PRINT_POINT_STEP 降频 */
+        if ((ESP_PRINT_POINT_STEP <= 1) || ((i % ESP_PRINT_POINT_STEP) == 0))
+        {
+            printf("%f,%f,%f,%f\r\n", (double)v0, (double)v1, (double)v2, (double)v3);
+        }
+#endif
+        node_channels[0].waveform[i] = v0;
+        node_channels[1].waveform[i] = v1;
+        node_channels[2].waveform[i] = v2;
+        node_channels[3].waveform[i] = v3;
+        sum0 += (double)v0;
+        sum1 += (double)v1;
+        sum2 += (double)v2;
+        sum3 += (double)v3;
+    }
+
+    node_channels[0].current_value = ESP_SafeFloat((float)(sum0 / (double)WAVEFORM_POINTS));
+    node_channels[1].current_value = ESP_SafeFloat((float)(sum1 / (double)WAVEFORM_POINTS));
+    node_channels[2].current_value = ESP_SafeFloat((float)(sum2 / (double)WAVEFORM_POINTS));
+    node_channels[3].current_value = ESP_SafeFloat((float)(sum3 / (double)WAVEFORM_POINTS));
+
+    for (int ch = 0; ch < 4; ch++)
+    {
+        memcpy(fft_input_buf, node_channels[ch].waveform, sizeof(fft_input_buf));
+        arm_rfft_fast_f32(&S, fft_input_buf, fft_output_buf, 0);
+        arm_cmplx_mag_f32(fft_output_buf, fft_mag_buf, WAVEFORM_POINTS / 2);
+        node_channels[ch].fft_data[0] = 0;
+        for (int i = 1; i < FFT_POINTS; i++)
+        {
+            node_channels[ch].fft_data[i] = (fft_mag_buf[i] / (float)(WAVEFORM_POINTS / 2)) * 2.0f;
+        }
+    }
+
+    last_ready = ready;
 }
 
 static void StrTrimInPlace(char *s)
@@ -842,7 +1322,7 @@ void ESP_Console_Poll(void)
         if (g_report_enabled && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
         {
             // 正常情况下服务器会对每次心跳返回 HTTP 响应
-            uint32_t no_rx_ms = (uint32_t)ESP_NO_SERVER_RX_HARDRESET_SEC * 1000u;
+            uint32_t no_rx_ms = (uint32_t)ESP_CommParams_HardResetSec() * 1000u;
             if (no_rx_ms < 5000u)
                 no_rx_ms = 5000u; // 最小阈值 5s（避免过短导致抖动）
 
@@ -889,19 +1369,53 @@ void ESP_Post_Data(void)
     if (g_esp_ready == 0)
         return;
 
-    // 5Hz 发送频率限制
+    /* 发送节流统计 */
     static uint32_t last_send_time = 0;
+    static uint32_t tx_try = 0, tx_ok = 0, tx_busy = 0, tx_err = 0;
+    static uint32_t last_tx_log = 0;
+
     uint32_t now_tick = HAL_GetTick();
-    if (now_tick - last_send_time < 200)
+
+    /* 如果正在分段发送，优先推进下一段 */
+    if (g_tx_chunk.active) {
+        if (now_tick < g_tx_chunk.next_tick) {
+            return;
+        }
+        HAL_UART_StateTypeDef st_uart = HAL_UART_GetState(&huart2);
+        if (st_uart == HAL_UART_STATE_BUSY_TX || st_uart == HAL_UART_STATE_BUSY_TX_RX) {
+            return;
+        }
+        goto send_next_chunk;
+    }
+
+    /* 非分段 DMA 链发送期间，禁止再次进入发送流程 */
+    if (g_http_tx_phase != ESP_HTTP_TX_IDLE) {
+        return;
+    }
+
+    /* HTTP 门控：发送后等待回包，避免连续请求淹没服务器；超时后自动放行。 */
+    if (g_waiting_http_response)
+    {
+        uint32_t now_gate = HAL_GetTick();
+        uint32_t to_ms = ESP_CommParams_HttpTimeoutMs();
+        if ((now_gate - g_waiting_http_tick) < to_ms)
+            return;
+        g_waiting_http_response = 0;
+    }
+
+    // 发送频率限制
+    uint32_t min_itv = ESP_CommParams_MinIntervalMs();
+    if (min_itv && (now_tick - last_send_time < min_itv))
         return;
 
-    // 开始构建 JSON
-    char *p = (char *)http_packet_buf;
+    /* 开始构建 JSON：把 body 放到偏移处，避免对大 body 做 memmove */
+    const uint32_t header_reserve_len = 256;
+    char *body = (char *)http_packet_buf + header_reserve_len;
+    char *p = body;
     const char *end = (const char *)http_packet_buf + sizeof(http_packet_buf);
-    uint32_t body_len;
-    uint32_t header_reserve_len = 256;
-    int header_len;
-    uint32_t total_len;
+    uint32_t body_len = 0;
+    int header_len = 0;
+    uint32_t total_len = 0;
     static uint32_t s_seq = 0;
     uint32_t seq = ++s_seq;
 
@@ -913,31 +1427,30 @@ void ESP_Post_Data(void)
     // 循环写入 4 个通道的数据
     for (int i = 0; i < 4; i++)
     {
-        float cv = ESP_SafeFloat(node_channels[i].current_value);
+        int32_t cv_i = ESP_FloatToI32Scaled(node_channels[i].current_value);
         if (!ESP_Appendf(&p, end,
                          "{"
                          "\"id\":%d,\"channel_id\":%d,"
                          "\"label\":\"%s\",\"name\":\"%s\","
-                         "\"value\":%.2f,\"current_value\":%.2f,"
+                         "\"value\":%ld,\"current_value\":%ld,"
                          "\"unit\":\"%s\","
                          "\"waveform\":[",
                          node_channels[i].id, node_channels[i].id,
                          node_channels[i].label, node_channels[i].label, // name冗余label
-                         (double)cv, (double)cv,
+                         (long)cv_i, (long)cv_i,
                          node_channels[i].unit))
             return;
 
-        // 波形数据
-        if (!Helper_FloatArray_To_String(p, end, node_channels[i].waveform, WAVEFORM_POINTS, WAVEFORM_SEND_STEP))
+        // 波形数据（运行时降采样：step=1全量，step=4每4点取1点）
+        if (!Helper_FloatArray_To_String(&p, end, node_channels[i].waveform, WAVEFORM_POINTS, (int)ESP_CommParams_WaveStep()))
             return;
-        p += strlen(p);
 
         // 频谱数据
         if (!ESP_Appendf(&p, end, "],\"fft_spectrum\":["))
             return;
-        if (!Helper_FloatArray_To_String(p, end, node_channels[i].fft_data, FFT_POINTS, 1))
+        /* FFT 不乘 200：保持原始数值（1 位小数） */
+        if (!Helper_FloatArray1dp_To_String(&p, end, node_channels[i].fft_data, FFT_POINTS, 1))
             return;
-        p += strlen(p);
 
         // 结束当前 channel
         if (!ESP_Appendf(&p, end, "]}"))
@@ -952,16 +1465,14 @@ void ESP_Post_Data(void)
     if (!ESP_Appendf(&p, end, "]}")) // JSON End
         return;
 
-    body_len = (uint32_t)(p - (char *)http_packet_buf);
+    body_len = (uint32_t)(p - body);
     if (body_len == 0 || body_len > (sizeof(http_packet_buf) - header_reserve_len - 64u))
     {
         // 保护：长度异常直接丢弃，避免 memmove 越界导致后续随机坏帧
         return;
     }
 
-    // 拼接 HTTP Header
-    // 先把 Body 往后挪，腾出 Header 空间
-    memmove(http_packet_buf + header_reserve_len, http_packet_buf, body_len);
+    /* 生成 header 到预留区 */
     header_len = snprintf((char *)http_packet_buf, header_reserve_len,
                           "POST /api/node/heartbeat HTTP/1.1\r\n"
                           "Host: %s:%d\r\n"
@@ -971,34 +1482,75 @@ void ESP_Post_Data(void)
                           g_sys_cfg.server_ip, g_sys_cfg.server_port, (unsigned long)body_len);
     if (header_len <= 0 || (uint32_t)header_len >= header_reserve_len)
         return;
-    // 把 Body 接回来
-    memmove(http_packet_buf + header_len, http_packet_buf + header_reserve_len, body_len);
+
+    /* 关闭分段：header DMA + body DMA（避免 memmove 大包） */
+    if (ESP_CommParams_ChunkKb() == 0u)
+    {
+        DCache_CleanByAddr_Any(http_packet_buf, (uint32_t)header_len);
+        DCache_CleanByAddr_Any(body, body_len);
+        HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2, (uint8_t *)http_packet_buf, (uint16_t)header_len);
+        tx_try++;
+        if (st == HAL_OK) {
+            tx_ok++;
+            g_http_tx_body_ptr = (uint8_t *)body;
+            g_http_tx_body_len = body_len;
+            g_http_tx_phase = ESP_HTTP_TX_HEADER_INFLIGHT;
+            last_send_time = now_tick;
+        } else if (st == HAL_BUSY) {
+            tx_busy++;
+        } else {
+            tx_err++;
+        }
+        return;
+    }
+
+    /* 分段发送：需要把 header+body 变成连续缓冲（仍会 memmove 一次大包） */
+    memmove(http_packet_buf + header_len, body, body_len);
     total_len = (uint32_t)header_len + body_len;
     if (total_len > sizeof(http_packet_buf))
         return;
-
-    // 统计发送状态
-    static uint32_t tx_try = 0, tx_ok = 0, tx_busy = 0, tx_err = 0;
-    static uint32_t last_tx_log = 0;
-    tx_try++;
-
-    // ⚠️ 关键步骤：DMA 发送前必须 Clean DCache
-    // 确保 CPU 写入缓冲区的最新 JSON 数据被刷入物理内存，DMA 才能搬运正确的数据。
     DCache_CleanByAddr_Any(http_packet_buf, total_len);
 
-    // 启动 DMA 发送
-    HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2, (uint8_t *)http_packet_buf, (uint16_t)total_len);
-    if (st == HAL_OK)
-        tx_ok++;
-    else if (st == HAL_BUSY)
-        tx_busy++;
-    else
-        tx_err++;
+    /* 初始化分段发送上下文 */
+    g_tx_chunk.total_len = total_len;
+    g_tx_chunk.offset = 0;
+    g_tx_chunk.next_tick = 0;
+    g_tx_chunk.active = 1;
+    now_tick = HAL_GetTick();
 
-    if (st == HAL_OK)
-    {
-        last_send_time = now_tick;
-        g_last_heartbeat_tick = now_tick;
+send_next_chunk:
+    if (!g_tx_chunk.active) {
+        return;
+    }
+    uint32_t chunk_bytes = ESP_CommParams_ChunkKb() * 1024u;
+    if (chunk_bytes == 0u) chunk_bytes = 1024u;
+    uint32_t remain = g_tx_chunk.total_len - g_tx_chunk.offset;
+    if (remain == 0u) {
+        g_tx_chunk.active = 0;
+        return;
+    }
+    if (chunk_bytes > remain) chunk_bytes = remain;
+    if (chunk_bytes > 65535u) chunk_bytes = 65535u;
+
+    HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2,
+                                                 (uint8_t *)http_packet_buf + g_tx_chunk.offset,
+                                                 (uint16_t)chunk_bytes);
+    tx_try++;
+    if (st == HAL_OK) {
+        tx_ok++;
+        g_tx_chunk.offset += chunk_bytes;
+        g_tx_chunk.next_tick = now_tick + ESP_CommParams_ChunkDelayMs();
+        if (g_tx_chunk.offset >= g_tx_chunk.total_len) {
+            g_tx_chunk.active = 0;
+            last_send_time = now_tick;
+            g_last_heartbeat_tick = now_tick;
+            g_waiting_http_response = 1;
+            g_waiting_http_tick = now_tick;
+        }
+    } else if (st == HAL_BUSY) {
+        tx_busy++;
+    } else {
+        tx_err++;
     }
 
 #if (ESP_DEBUG)
@@ -1007,9 +1559,11 @@ void ESP_Post_Data(void)
     if ((now - last_tx_log) >= 1000)
     {
         last_tx_log = now;
-        ESP_Log("[调试] TX: try=%lu ok=%lu busy=%lu err=%lu len=%lu gState=%d rxStarted=%d\r\n",
+        ESP_Log("[调试] TX: try=%lu ok=%lu busy=%lu err=%lu total=%lu off=%lu chunk=%lu gState=%d rxStarted=%d\r\n",
                 (unsigned long)tx_try, (unsigned long)tx_ok, (unsigned long)tx_busy, (unsigned long)tx_err,
-                (unsigned long)total_len,
+                (unsigned long)g_tx_chunk.total_len,
+                (unsigned long)g_tx_chunk.offset,
+                (unsigned long)chunk_bytes,
                 (int)huart2.gState,
                 (int)g_usart2_rx_started);
     }
@@ -1020,11 +1574,18 @@ void ESP_Post_Heartbeat(void)
 {
     if (g_esp_ready == 0)
         return;
-    if (g_waiting_http_response)
-        return;
 
     uint32_t now = HAL_GetTick();
-    if (now - g_last_heartbeat_tick < ESP_HEARTBEAT_INTERVAL_MS)
+    if (g_waiting_http_response)
+    {
+        /* 等待回包期间禁止继续发心跳；但超时后自动放行 */
+        uint32_t to_ms = ESP_CommParams_HttpTimeoutMs();
+        if ((now - g_waiting_http_tick) < to_ms)
+            return;
+        g_waiting_http_response = 0;
+    }
+
+    if (now - g_last_heartbeat_tick < ESP_CommParams_HeartbeatMs())
         return;
 
     HAL_UART_StateTypeDef st = HAL_UART_GetState(&huart2);
@@ -1057,6 +1618,50 @@ void ESP_Post_Heartbeat(void)
 #if (ESP_DEBUG)
         ESP_Log("[调试] Heartbeat sent len=%d\r\n", req_len);
 #endif
+    }
+}
+
+// ---------------- USART2 TX DMA 完成回调：Header -> Body 链式发送 ----------------
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (!huart || huart->Instance != USART2)
+        return;
+
+    if (g_http_tx_phase == ESP_HTTP_TX_HEADER_INFLIGHT)
+    {
+        if (!g_http_tx_body_ptr || g_http_tx_body_len == 0)
+        {
+            g_http_tx_phase = ESP_HTTP_TX_IDLE;
+            g_http_tx_body_ptr = NULL;
+            g_http_tx_body_len = 0;
+            return;
+        }
+        HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2,
+                                                     g_http_tx_body_ptr,
+                                                     (uint16_t)g_http_tx_body_len);
+        if (st == HAL_OK)
+        {
+            g_http_tx_phase = ESP_HTTP_TX_BODY_INFLIGHT;
+            uint32_t now = HAL_GetTick();
+            g_last_heartbeat_tick = now;
+            g_waiting_http_response = 1;
+            g_waiting_http_tick = now;
+        }
+        else
+        {
+            g_http_tx_phase = ESP_HTTP_TX_IDLE;
+            g_http_tx_body_ptr = NULL;
+            g_http_tx_body_len = 0;
+        }
+        return;
+    }
+
+    if (g_http_tx_phase == ESP_HTTP_TX_BODY_INFLIGHT)
+    {
+        g_http_tx_phase = ESP_HTTP_TX_IDLE;
+        g_http_tx_body_ptr = NULL;
+        g_http_tx_body_len = 0;
+        return;
     }
 }
 
@@ -1606,8 +2211,8 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
     while ((HAL_GetTick() - start) < timeout)
     {
         uint8_t ch;
-        // 轮询方式接收一个字节
-        if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
+        // 轮询方式接收一个字节（超时从5ms增加到10ms，减少轮询频率）
+        if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)
         {
             if (idx < sizeof(esp_rx_buf) - 1)
             {
@@ -1647,7 +2252,7 @@ static uint8_t ESP_Send_Cmd(const char *cmd, const char *reply, uint32_t timeout
         }
         else
         {
-            ESP_RtosYield();
+            HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
         }
     }
 #if (ESP_DEBUG)
@@ -1686,7 +2291,7 @@ static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char 
     while ((HAL_GetTick() - start) < timeout)
     {
         uint8_t ch;
-        if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
+        if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)  /* 超时从5ms增加到10ms，减少轮询频率 */
         {
             if (idx < sizeof(esp_rx_buf) - 1)
             {
@@ -1724,7 +2329,7 @@ static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char 
         }
         else
         {
-            ESP_RtosYield();
+            HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
         }
     }
 #if (ESP_DEBUG)
@@ -1735,29 +2340,118 @@ static uint8_t ESP_Send_Cmd_Any(const char *cmd, const char *reply1, const char 
     return 0;
 }
 
-static int Helper_FloatArray_To_String(char *dest, const char *end, float *data, int count, int step)
+static inline char *ESP_AppendI32(char *p, const char *end, int32_t x)
 {
-    int i;
-    for (i = 0; i < count; i += step)
+    if (!p || !end || p >= end)
+        return NULL;
+    if (x == 0)
     {
-        float v = ESP_SafeFloat(data[i]);
-        int rem = (int)(end - dest);
-        if (rem <= 2)
+        if (p + 1 > end)
+            return NULL;
+        *p++ = '0';
+        return p;
+    }
+    if (x < 0)
+    {
+        if (p + 1 > end)
+            return NULL;
+        *p++ = '-';
+        /* INT32_MIN 溢出保护：转无符号处理 */
+        uint32_t ux = (uint32_t)(-(x + 1)) + 1u;
+        char tmp[11];
+        int n = 0;
+        while (ux > 0 && n < (int)sizeof(tmp))
+        {
+            tmp[n++] = (char)('0' + (ux % 10u));
+            ux /= 10u;
+        }
+        if ((end - p) < n)
+            return NULL;
+        while (n--)
+            *p++ = tmp[n];
+        return p;
+    }
+    uint32_t ux = (uint32_t)x;
+    char tmp[11];
+    int n = 0;
+    while (ux > 0 && n < (int)sizeof(tmp))
+    {
+        tmp[n++] = (char)('0' + (ux % 10u));
+        ux /= 10u;
+    }
+    if ((end - p) < n)
+        return NULL;
+    while (n--)
+        *p++ = tmp[n];
+    return p;
+}
+
+static int Helper_FloatArray_To_String(char **pp, const char *end, const float *data, int count, int step)
+{
+    if (!pp || !*pp || !end || *pp >= end || !data || count <= 0 || step <= 0)
+        return 0;
+
+    char *p = *pp;
+
+    for (int i = 0; i < count; i += step)
+    {
+        int32_t x = ESP_FloatToI32Scaled(data[i]);
+        char *np = ESP_AppendI32(p, end, x);
+        if (!np)
             return 0;
-        int n = snprintf(dest, (size_t)rem, "%.1f", (double)v);
-        if (n < 0 || n >= rem)
-            return 0;
-        dest += n;
+        p = np;
         if (i + step < count)
         {
-            if (dest + 1 >= end)
+            if (p + 1 > (char *)end)
                 return 0;
-            *dest++ = ',';
+            *p++ = ',';
         }
     }
-    if (dest >= end)
+
+    if (p >= (char *)end)
         return 0;
-    *dest = 0;
+    *p = 0;
+    *pp = p;
+    return 1;
+}
+
+/* 输出 float 数组（1 位小数），不做 ×200 缩放
+ * - 仍不使用 snprintf，避免 CPU 开销
+ * - 仅用于 fft_spectrum[]（你要求 FFT 不需要 ×200） */
+static int Helper_FloatArray1dp_To_String(char **pp, const char *end, const float *data, int count, int step)
+{
+    if (!pp || !*pp || !end || *pp >= end || !data || count <= 0 || step <= 0)
+        return 0;
+
+    char *p = *pp;
+    for (int i = 0; i < count; i += step)
+    {
+        float vf = ESP_SafeFloat(data[i]);
+        int32_t x10 = (int32_t)((vf >= 0.0f) ? (vf * 10.0f + 0.5f) : (vf * 10.0f - 0.5f));
+        int32_t ip = x10 / 10;
+        int32_t fp = x10 % 10;
+        if (fp < 0)
+            fp = -fp;
+
+        char *np = ESP_AppendI32(p, end, ip);
+        if (!np || (end - np) < 2)
+            return 0;
+        *np++ = '.';
+        *np++ = (char)('0' + (fp % 10));
+        p = np;
+
+        if (i + step < count)
+        {
+            if (p + 1 > (char *)end)
+                return 0;
+            *p++ = ',';
+        }
+    }
+
+    if (p >= (char *)end)
+        return 0;
+    *p = 0;
+    *pp = p;
     return 1;
 }
 
@@ -1870,6 +2564,31 @@ bool ESP_UI_IsReporting(void)
     return (g_report_enabled != 0U);
 }
 
+bool ESP_UI_IsWiFiOk(void)
+{
+    return (g_ui_wifi_ok != 0U);
+}
+
+bool ESP_UI_IsTcpOk(void)
+{
+    return (g_ui_tcp_ok != 0U);
+}
+
+bool ESP_UI_IsRegOk(void)
+{
+    /* 注册 OK：以 g_ui_reg_ok 为准；同时 g_esp_ready 也代表“已注册+就绪可上报” */
+    return (g_ui_reg_ok != 0U) || (g_esp_ready != 0U);
+}
+
+const char *ESP_UI_NodeId(void)
+{
+    const SystemConfig_t *cfg = ESP_Config_Get();
+    if (cfg && cfg->node_id[0]) {
+        return cfg->node_id;
+    }
+    return "--";
+}
+
 void ESP_UI_InvalidateReg(void)
 {
     /* 仅清除“就绪可上报”标志，不做任何后台重连/硬复位 */
@@ -1978,7 +2697,7 @@ static bool ESP_UI_IsTcpConnected(void)
     while ((HAL_GetTick() - start) < 1500U)
     {
         uint8_t ch;
-        if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
+        if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)  /* 超时从5ms增加到10ms，减少轮询频率 */
         {
             if (idx < sizeof(esp_rx_buf) - 1)
             {
@@ -1992,7 +2711,7 @@ static bool ESP_UI_IsTcpConnected(void)
                 uint32_t t2 = HAL_GetTick();
                 while ((HAL_GetTick() - t2) < 150U)
                 {
-                    if (HAL_UART_Receive(&huart2, &ch, 1, 5) == HAL_OK)
+                    if (HAL_UART_Receive(&huart2, &ch, 1, 10) == HAL_OK)  /* 超时从5ms增加到10ms */
                     {
                         if (idx < sizeof(esp_rx_buf) - 1)
                         {
@@ -2002,7 +2721,7 @@ static bool ESP_UI_IsTcpConnected(void)
                     }
                     else
                     {
-                        ESP_RtosYield();
+                        HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
                     }
                 }
                 break;
@@ -2010,7 +2729,7 @@ static bool ESP_UI_IsTcpConnected(void)
         }
         else
         {
-            ESP_RtosYield();
+            HAL_Delay(1);  /* 用HAL_Delay替代ESP_RtosYield，减少任务切换开销 */
         }
     }
 
@@ -2204,11 +2923,15 @@ static void ESP_UI_ToggleReport(void)
         }
         g_report_enabled = 1U;
         ESP_Log("[UI] Started sensor data upload loop.\r\n");
+        /* 记录上次上电前上报状态：开启 */
+        (void)ESP_AutoReconnect_SetLastReporting(true);
     }
     else
     {
         g_report_enabled = 0U;
         ESP_Log("[UI] Data upload stopped.\r\n");
+        /* 记录上次上电前上报状态：关闭 */
+        (void)ESP_AutoReconnect_SetLastReporting(false);
     }
 }
 

@@ -30,25 +30,22 @@
 *.su
 
 # Keil 项目构建目录
-**/DebugConfig/
 **/Listings/
 **/Objects/
-**/RTE/
 
 # MDK-ARM 构建输出目录（保留 .uvprojx 和 .uvoptx 但忽略构建产物）
 MDK-ARM/STM32H750XBH6/
 MDK-ARM/*/Listings/
 MDK-ARM/*/Objects/
 MDK-ARM/*/*.dep
-MDK-ARM/*/*.uvguix.*
 
 # ===========================
 # Keil 用户特定配置（不要上传）
 # ===========================
 
 # GUI 窗口布局（每个人的布局不同）
-*.uvguix.*
-*.uvgui.*
+#
+# 按你的要求“下位机除了编译产物，其余全部上传”，这里不再忽略 uvguix/uvgui。
 
 # 用户选项（包含本地路径等）
 # 注意：*.uvoptx 通常需要保留，因为包含调试器配置

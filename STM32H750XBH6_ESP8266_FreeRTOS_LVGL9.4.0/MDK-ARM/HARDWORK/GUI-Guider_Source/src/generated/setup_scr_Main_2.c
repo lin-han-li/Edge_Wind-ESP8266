@@ -133,7 +133,7 @@ void setup_scr_Main_2(lv_ui *ui)
     ui->Main_2_label_5 = lv_label_create(ui->Main_2);
     lv_obj_set_pos(ui->Main_2_label_5, 340, 380);
     lv_obj_set_size(ui->Main_2_label_5, 100, 30);
-    lv_label_set_text(ui->Main_2_label_5, "设备管理 ");
+    lv_label_set_text(ui->Main_2_label_5, " ");
     lv_label_set_long_mode(ui->Main_2_label_5, LV_LABEL_LONG_WRAP);
 
     //Write style for Main_2_label_5, Part: LV_PART_MAIN, State: LV_STATE_DEFAULT.

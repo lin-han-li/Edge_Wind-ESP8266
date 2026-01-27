@@ -108,10 +108,55 @@ typedef struct
 	lv_obj_t *ServerConfig_lbl_status;
 	lv_obj_t *ServerConfig_kb;
 
+	// ParamConfig Screen Objects
+	lv_obj_t *ParamConfig;
+	bool ParamConfig_del;
+	lv_obj_t *ParamConfig_cont_panel;
+	lv_obj_t *ParamConfig_lbl_title;
+	// Header quick presets
+	lv_obj_t *ParamConfig_btn_lan;
+	lv_obj_t *ParamConfig_lbl_lan;
+	lv_obj_t *ParamConfig_btn_wan;
+	lv_obj_t *ParamConfig_lbl_wan;
+	// Row 1
+	lv_obj_t *ParamConfig_lbl_heartbeat;
+	lv_obj_t *ParamConfig_ta_heartbeat;
+	lv_obj_t *ParamConfig_lbl_sendlimit;
+	lv_obj_t *ParamConfig_ta_sendlimit;
+	// Row 2
+	lv_obj_t *ParamConfig_lbl_httptimeout;
+	lv_obj_t *ParamConfig_ta_httptimeout;
+	lv_obj_t *ParamConfig_lbl_hardreset;
+	lv_obj_t *ParamConfig_ta_hardreset;
+	// Extra: Downsample
+	lv_obj_t *ParamConfig_lbl_downsample;
+	lv_obj_t *ParamConfig_ta_downsample;
+	// Extra: Chunked send
+	lv_obj_t *ParamConfig_lbl_chunkkb;
+	lv_obj_t *ParamConfig_ta_chunkkb;
+	lv_obj_t *ParamConfig_lbl_chunkdelay;
+	lv_obj_t *ParamConfig_ta_chunkdelay;
+	// Quick action: disable chunking
+	lv_obj_t *ParamConfig_btn_nochunk;
+	lv_obj_t *ParamConfig_lbl_nochunk;
+	// Buttons & Status
+	lv_obj_t *ParamConfig_btn_back;
+	lv_obj_t *ParamConfig_btn_back_label;
+	lv_obj_t *ParamConfig_btn_load;
+	lv_obj_t *ParamConfig_btn_load_label;
+	lv_obj_t *ParamConfig_btn_save;
+	lv_obj_t *ParamConfig_btn_save_label;
+	lv_obj_t *ParamConfig_lbl_status;
+	lv_obj_t *ParamConfig_lbl_tips;
+	lv_obj_t *ParamConfig_kb;
+
 	// DeviceConnect Screen Objects
 	lv_obj_t *DeviceConnect;
 	bool DeviceConnect_del;
 	lv_obj_t *DeviceConnect_lbl_title;
+	/* 右上角：断电重连开关按钮（是否） */
+	lv_obj_t *DeviceConnect_btn_autorec;
+	lv_obj_t *DeviceConnect_lbl_autorec;
 	lv_obj_t *DeviceConnect_cont_panel;
 	lv_obj_t *DeviceConnect_led_wifi;
 	lv_obj_t *DeviceConnect_lbl_stat_wifi;
@@ -166,6 +211,7 @@ void setup_scr_Main_2(lv_ui *ui);
 void setup_scr_Main_3(lv_ui *ui);
 void setup_scr_WifiConfig(lv_ui *ui);
 void setup_scr_ServerConfig(lv_ui *ui);
+void setup_scr_ParamConfig(lv_ui *ui);
 void setup_scr_DeviceConnect(lv_ui *ui);
 
 

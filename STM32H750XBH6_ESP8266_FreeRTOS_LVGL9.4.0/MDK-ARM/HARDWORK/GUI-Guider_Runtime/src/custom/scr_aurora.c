@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "../../gui_assets.h"
+#include "../../../ESP8266/esp8266.h"
 
 /**********************
  * DEFINES
@@ -57,8 +58,21 @@ static lv_style_t style_icon_box;
 static lv_style_t style_title;
 static bool styles_inited = false;
 
+/* Header status widgets (runtime refreshed) */
+static lv_timer_t * s_status_timer = NULL;
+static lv_obj_t * s_dot_wifi = NULL;
+static lv_obj_t * s_dot_tcp = NULL;
+static lv_obj_t * s_dot_reg = NULL;
+static lv_obj_t * s_dot_rep = NULL;
+static lv_obj_t * s_lbl_node = NULL;
+static lv_obj_t * s_lbl_wifi = NULL;
+static lv_obj_t * s_lbl_tcp = NULL;
+static lv_obj_t * s_lbl_reg = NULL;
+static lv_obj_t * s_lbl_rep = NULL;
+
 typedef enum {
     AURORA_NAV_NONE = 0,
+    AURORA_NAV_PARAM,
     AURORA_NAV_WIFI,
     AURORA_NAV_SERVER,
     AURORA_NAV_DEVICE
@@ -72,6 +86,7 @@ typedef struct {
 static aurora_nav_ctx_t nav_wifi;
 static aurora_nav_ctx_t nav_server;
 static aurora_nav_ctx_t nav_device;
+static aurora_nav_ctx_t nav_param;
 
 /**********************
  * ANIMATION FUNCTIONS
@@ -154,6 +169,80 @@ static void init_aurora_styles(void)
     lv_style_set_text_color(&style_title, lv_color_hex(0x334155));
 
     styles_inited = true;
+}
+
+static lv_obj_t * create_status_item(lv_obj_t * parent, const char * text, lv_obj_t ** dot_out, lv_obj_t ** lbl_out, bool big_dot)
+{
+    if (!parent) {
+        return NULL;
+    }
+    lv_obj_t * item = lv_obj_create(parent);
+    lv_obj_remove_style_all(item);
+    lv_obj_set_size(item, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(item, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(item, 4, 0);
+    lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * dot = lv_obj_create(item);
+    lv_obj_remove_style_all(dot);
+    lv_obj_set_size(dot, big_dot ? 12 : 10, big_dot ? 12 : 10);
+    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dot, lv_color_hex(0x999999), 0);
+    lv_obj_set_style_bg_opa(dot, 255, 0);
+    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * lbl = lv_label_create(item);
+    lv_label_set_text(lbl, text ? text : "");
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_text_font(lbl, gui_assets_get_font_16(), 0);
+
+    if (dot_out) *dot_out = dot;
+    if (lbl_out) *lbl_out = lbl;
+    return item;
+}
+
+static void status_set(lv_obj_t *dot, bool ok)
+{
+    if (!dot || !lv_obj_is_valid(dot)) return;
+    lv_obj_set_style_bg_color(dot, ok ? COL_GREEN : lv_color_hex(0x999999), 0);
+    lv_obj_set_style_bg_opa(dot, 255, 0);
+}
+
+static void aurora_status_timer_cb(lv_timer_t * t)
+{
+    (void)t;
+
+    /* Screen destroyed -> stop timer */
+    if (!ui_AuroraScr || !lv_obj_is_valid(ui_AuroraScr)) {
+        if (s_status_timer) {
+            lv_timer_del(s_status_timer);
+            s_status_timer = NULL;
+        }
+        return;
+    }
+
+    bool wifi_ok = ESP_UI_IsWiFiOk();
+    bool tcp_ok  = ESP_UI_IsTcpOk();
+    bool reg_ok  = ESP_UI_IsRegOk();
+    bool rep_ok  = ESP_UI_IsReporting();
+
+    /* reporting implies all previous steps are ok */
+    if (rep_ok) {
+        wifi_ok = true;
+        tcp_ok = true;
+        reg_ok = true;
+    }
+
+    status_set(s_dot_wifi, wifi_ok);
+    status_set(s_dot_tcp, tcp_ok);
+    status_set(s_dot_reg, reg_ok);
+    status_set(s_dot_rep, rep_ok);
+
+    if (s_lbl_node && lv_obj_is_valid(s_lbl_node)) {
+        const char *id = ESP_UI_NodeId();
+        lv_label_set_text_fmt(s_lbl_node, "NODE:%s", id ? id : "--");
+    }
 }
 
 static void create_aurora_background(lv_obj_t * parent)
@@ -256,6 +345,10 @@ static void aurora_nav_event_cb(lv_event_t * e)
     lv_indev_wait_release(lv_indev_active());
 
     switch (ctx->target) {
+    case AURORA_NAV_PARAM:
+        ui_load_scr_animation(ctx->ui, &ctx->ui->ParamConfig, ctx->ui->ParamConfig_del, &ctx->ui->Main_1_del,
+                              setup_scr_ParamConfig, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
+        break;
     case AURORA_NAV_WIFI:
         ui_load_scr_animation(ctx->ui, &ctx->ui->WifiConfig, ctx->ui->WifiConfig_del, &ctx->ui->Main_1_del,
                               setup_scr_WifiConfig, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
@@ -361,6 +454,8 @@ void setup_scr_Aurora(lv_ui * ui)
     nav_server.target = AURORA_NAV_SERVER;
     nav_device.ui = ui;
     nav_device.target = AURORA_NAV_DEVICE;
+    nav_param.ui = ui;
+    nav_param.target = AURORA_NAV_PARAM;
 
     ui->Main_1 = lv_obj_create(NULL);
     ui_AuroraScr = ui->Main_1;
@@ -404,26 +499,53 @@ void setup_scr_Aurora(lv_ui * ui)
 
     lv_obj_t * status_pill = lv_obj_create(header);
     lv_obj_remove_style_all(status_pill);
-    lv_obj_set_size(status_pill, 160, 32);
+    /* Two-line pill: Row1(WIFI/TCP/REG/REP) + Row2(NODE:xx) */
+    lv_obj_set_size(status_pill, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(status_pill, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(status_pill, 120, 0);
-    lv_obj_set_style_radius(status_pill, 16, 0);
-    lv_obj_set_flex_flow(status_pill, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_radius(status_pill, 18, 0);
+    lv_obj_set_flex_flow(status_pill, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(status_pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_gap(status_pill, 8, 0);
+    lv_obj_set_style_pad_hor(status_pill, 10, 0);
+    lv_obj_set_style_pad_ver(status_pill, 4, 0);
+    lv_obj_set_style_pad_gap(status_pill, 4, 0);
     lv_obj_clear_flag(status_pill, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t * wifi_dot = lv_obj_create(status_pill);
-    lv_obj_remove_style_all(wifi_dot);
-    lv_obj_set_size(wifi_dot, 8, 8);
-    lv_obj_set_style_radius(wifi_dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(wifi_dot, COL_GREEN, 0);
-    lv_obj_set_style_bg_opa(wifi_dot, 255, 0);
+    /* Row 1: WIFI / TCP / REG / REP */
+    lv_obj_t * row1 = lv_obj_create(status_pill);
+    lv_obj_remove_style_all(row1);
+    lv_obj_set_size(row1, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row1, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row1, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(row1, 10, 0);
+    lv_obj_clear_flag(row1, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t * status_txt = lv_label_create(status_pill);
-    lv_label_set_text(status_txt, "WiFi On  Node: 01");
-    lv_obj_set_style_text_color(status_txt, lv_color_hex(0x334155), 0);
-    lv_obj_set_style_text_font(status_txt, gui_assets_get_font_16(), 0);
+    (void)create_status_item(row1, "WIFI", &s_dot_wifi, &s_lbl_wifi, true /* bigger */);
+    (void)create_status_item(row1, "TCP",  &s_dot_tcp,  &s_lbl_tcp,  false);
+    (void)create_status_item(row1, "REG",  &s_dot_reg,  &s_lbl_reg,  false);
+    (void)create_status_item(row1, "REP",  &s_dot_rep,  &s_lbl_rep,  false);
+
+    /* Row 2: NODE */
+    lv_obj_t * row2 = lv_obj_create(status_pill);
+    lv_obj_remove_style_all(row2);
+    lv_obj_set_size(row2, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row2, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row2, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(row2, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t * node_lbl = lv_label_create(row2);
+    lv_label_set_text(node_lbl, "NODE:--");
+    lv_obj_set_style_text_color(node_lbl, lv_color_hex(0x334155), 0);
+    lv_obj_set_style_text_font(node_lbl, gui_assets_get_font_16(), 0);
+    s_lbl_node = node_lbl;
+
+    /* start timer refresh */
+    if (s_status_timer) {
+        lv_timer_del(s_status_timer);
+        s_status_timer = NULL;
+    }
+    aurora_status_timer_cb(NULL);
+    s_status_timer = lv_timer_create(aurora_status_timer_cb, 500, NULL);
 
     ui_Carousel = lv_obj_create(ui_AuroraScr);
     lv_obj_remove_style_all(ui_Carousel);
@@ -446,11 +568,11 @@ void setup_scr_Aurora(lv_ui * ui)
     create_app_card(p1, "报警设置", 5, COL_ORANGE, NULL);
 
     lv_obj_t * p2 = create_grid_page(ui_Carousel);
-    create_app_card(p2, "参数配置", 6, COL_INDIGO, NULL);
+    create_app_card(p2, "通讯参数配置", 6, COL_INDIGO, &nav_param);
     create_app_card(p2, "网络设置", 7, COL_BLUE, &nav_wifi);
     create_app_card(p2, "服务器", 8, COL_CYAN, &nav_server);
     create_app_card(p2, "系统诊断", 9, COL_AMBER, NULL);
-    create_app_card(p2, "设备管理", 10, COL_GREEN, &nav_device);
+    create_app_card(p2, "设备连接", 10, COL_GREEN, &nav_device);
     create_app_card(p2, "用户管理", 11, COL_PINK, NULL);
 
     lv_obj_t * p3 = create_grid_page(ui_Carousel);

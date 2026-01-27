@@ -72,8 +72,8 @@ STATUS_EMIT_HZ = max(1.0, _env_float("EDGEWIND_STATUS_EMIT_HZ", 5))
 MONITOR_EMIT_HZ = max(1.0, _env_float("EDGEWIND_MONITOR_EMIT_HZ", 20))
 
 # 波形/频谱降采样点数（0 表示不降采样）
-MAX_WAVEFORM_POINTS = max(0, _env_int("EDGEWIND_WAVEFORM_POINTS", 256))
-MAX_SPECTRUM_POINTS = max(0, _env_int("EDGEWIND_SPECTRUM_POINTS", 128))
+MAX_WAVEFORM_POINTS = max(0, _env_int("EDGEWIND_WAVEFORM_POINTS", 0))
+MAX_SPECTRUM_POINTS = max(0, _env_int("EDGEWIND_SPECTRUM_POINTS", 0))
 
 # active_nodes 是否仅保存“轻量数据”（不保留 1024 点全量波形）
 LIGHT_ACTIVE_NODES = str(os.environ.get("EDGEWIND_LIGHT_ACTIVE_NODES", "true")).strip().lower() == "true"

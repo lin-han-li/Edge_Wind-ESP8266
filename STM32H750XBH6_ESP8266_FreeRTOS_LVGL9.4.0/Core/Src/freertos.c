@@ -564,7 +564,7 @@ void ESP8266_Task(void *argument)
       ESP_Update_Data_And_FFT();
       ESP_Post_Data();
     }
-    osDelay(1);
+    osDelay(5);  /* 从1ms改为5ms，减少任务切换频率，降低CPU占用 */
   }
   /* USER CODE END ESP8266_Task */
 }

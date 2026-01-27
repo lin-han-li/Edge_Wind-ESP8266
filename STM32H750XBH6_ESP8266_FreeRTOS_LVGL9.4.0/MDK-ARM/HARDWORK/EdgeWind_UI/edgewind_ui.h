@@ -43,6 +43,12 @@ bool edgewind_ui_boot_finished(void);
  */
 void edgewind_ui_on_enter_system(void);
 
+/**
+ * @brief 开机动画结束、"进入系统"按钮显示前回调（弱符号）
+ * @note  典型用途：断电重连/自动上报预启动（此时还未进入系统 UI）。
+ */
+void edgewind_ui_on_before_enter_button(void);
+
 #ifdef __cplusplus
 }
 #endif

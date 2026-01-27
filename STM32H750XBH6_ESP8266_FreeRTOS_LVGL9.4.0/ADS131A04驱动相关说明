@@ -1,0 +1,201 @@
+================================================================================
+TI ADS131A04 驱动开发指南 (Based on TI-ADS131A04.pdf)
+================================================================================
+
+一、 驱动初始化与操作流程 (Driver Initialization Flow)
+--------------------------------------------------------------------------------
+该流程基于手册中 "Figure 106. ADS131A0x Configuration Sequence" 及 "Initialization Set Up" 章节整理。
+
+1. 上电复位 (Power-On Reset)
+   - 确保 AVDD 和 IOVDD 电源稳定。
+   - 拉低 RESET 引脚保持至少 > 800ns (t_w(RSL))，然后拉高。
+   - 或者：通过 SPI 发送 RESET 命令 (0x0011)。
+   - 等待：复位后需要等待约 4.5ms (t_d(RSSC))，直到设备完成内部初始化。
+
+2. 检查就绪状态 (Check READY)
+   - 此时 SPI 接口处于 "Locked" 状态。
+   - 发送 NULL 命令 (0x0000) 或空字节。
+   - 检查返回的状态字 (Status Response)。
+   - 预期返回值：0xFF04 (对于 ADS131A04) 或 0xFF02 (对于 ADS131A02)。
+     注意：高 8 位 0xFF 表示 READY，低 8 位表示通道数。
+
+3. 解锁设备 (Unlock Device)
+   - 发送 UNLOCK 命令：0x0655。
+   - 检查返回值：应返回 0x0655 (ACK)。
+   - 解锁后，才可以对寄存器进行写操作。
+
+4. 寄存器配置 (Register Configuration)
+   - 此时设备处于 STANDBY 模式，适合进行配置。
+   - 使用 WREG (写单个) 或 WREGS (写多个) 命令配置以下关键参数：
+     a. A_SYS_CFG (0x0B): 设置内部/外部参考电压、负电荷泵(VNCPEN)、高分辨率模式(HRM)。
+     b. D_SYS_CFG (0x0C): 设置数据帧格式 (Fixed/Dynamic)、CRC 校验、看门狗。
+     c. CLK1 (0x0D) & CLK2 (0x0E): 设置时钟源 (CLKSRC)、分频系数 (CLK_DIV, ICLK_DIV) 和 过采样率 (OSR)。
+     d. ADCx (0x11-0x14): 设置每个通道的数字增益。
+
+5. 校验配置 (Verify Configuration)
+   - 建议使用 RREG 或 RREGS 回读刚才写入的寄存器，确保配置正确。
+
+6. 启用 ADC 通道 (Enable ADCs)
+   - 写入 ADC_ENA (0x0F) 寄存器。
+   - 写入值：0x0F (启用全部 4 个通道)。
+     (Bit 3:0 对应 Ch4:Ch1，置 1 为启用)。
+
+7. 唤醒设备开始转换 (Wakeup & Start Conversion)
+   - 发送 WAKEUP 命令：0x0033。
+   - 检查返回值：应返回 0x0033。
+   - 此时 ADC 开始工作，DRDY 引脚将开始以设定的数据速率输出脉冲。
+
+8. 锁定接口 (Optional: Lock Registers)
+   - 发送 LOCK 命令：0x0555。
+   - 作用：防止意外的寄存器写入，仅允许读数据和状态。
+   - 这一步是可选的，取决于应用安全性需求。
+
+9. 数据采集循环 (Data Collection Loop)
+   - 监测 DRDY 引脚下降沿（表示新数据就绪）。
+   - 拉低 CS 片选。
+   - 发送 NULL 命令 (0x0000)（如果是为了仅读取数据）。
+   - 读取 SPI 数据帧 (具体长度取决于是否开启 CRC 和固定帧模式)。
+   - 解析数据：
+     - Word 1: 状态字 (包含错误标志)。
+     - Word 2-5: 通道 1-4 的 ADC 数据 (24位 MSB First)。
+     - Word 6: CRC 校验字 (如果开启)。
+
+
+二、 SPI 指令集 (SPI Command Definitions)
+--------------------------------------------------------------------------------
+所有指令为 16 位长度。
+
+| 指令名称 | 指令代码 (Hex) | 描述 |
+| :--- | :--- | :--- |
+| NULL | 0000h | 空指令，用于读取状态和数据 |
+| RESET | 0011h | 软件复位 |
+| STANDBY | 0022h | 进入低功耗待机模式 |
+| WAKEUP | 0033h | 退出待机模式，开始转换 |
+| LOCK | 0555h | 锁定接口 (只读) |
+| UNLOCK | 0655h | 解锁接口 (允许写寄存器) |
+| RREG | 001a aaaa 00h | 读单个寄存器 (aaaaa = 寄存器地址) |
+| RREGS | 001a aaaa nnnn nnnn | 读多个寄存器 (nnnn nnnn = 数量 - 1) |
+| WREG | 010a aaaa dddd dddd | 写单个寄存器 (dddd dddd = 写入数据) |
+| WREGS | 011a aaaa nnnn nnnn | 写多个寄存器 (后续跟数据字) |
+
+
+三、 寄存器地图 (Register Map)
+--------------------------------------------------------------------------------
+复位值可能因型号而异，下表以 ADS131A04 为主。
+
+地址 | 寄存器名称 | 复位值 | 功能描述
+----|----------|-------|------------------------------------------------
+00h | ID_MSB | xxh | ID 控制寄存器高位 (包含通道数信息)
+01h | ID_LSB | xxh | ID 控制寄存器低位 (版本号)
+02h | STAT_1 | 00h | 系统状态寄存器 1 (通用故障标志)
+03h | STAT_P | 00h | 正输入端故障状态 (过压/欠压)
+04h | STAT_N | 00h | 负输入端故障状态 (过压/欠压)
+05h | STAT_S | 00h | SPI 状态寄存器 (帧错误、时钟错误)
+06h | ERROR_CNT| 00h | CRC 错误计数器
+07h | STAT_M2 | xxh | 硬件模式引脚状态 (回读 M0, M1, M2 引脚状态)
+08h | Reserved | 00h | 保留
+09h | Reserved | 00h | 保留
+0Ah | Reserved | 00h | 保留
+0Bh | A_SYS_CFG| 60h | 模拟系统配置 (参考电压、电荷泵、高分辨模式)
+0Ch | D_SYS_CFG| 3Ch | 数字系统配置 (CRC、固定帧、看门狗)
+0Dh | CLK1 | 08h | 时钟配置 1 (时钟源选择)
+0Eh | CLK2 | 86h | 时钟配置 2 (OSR、ICLK 分频)
+0Fh | ADC_ENA | 00h | ADC 通道使能控制
+10h | Reserved | 00h | 保留
+11h | ADC1 | 00h | 通道 1 数字增益配置
+12h | ADC2 | 00h | 通道 2 数字增益配置
+13h | ADC3 | 00h | 通道 3 数字增益配置 (仅 ADS131A04)
+14h | ADC4 | 00h | 通道 4 数字增益配置 (仅 ADS131A04)
+
+
+四、 关键寄存器详细配置 (Detailed Register Configuration)
+--------------------------------------------------------------------------------
+
+1. A_SYS_CFG (Address: 0Bh) - 模拟系统配置
+   [7] VNCPEN : 负电荷泵使能
+       0 = 禁用 (默认)
+       1 = 启用 (允许输入信号低至 -1.5V，需 3.3V 单电源)
+   [6] HRM : 高分辨率模式
+       0 = 低功耗模式 (Low-Power Mode)
+       1 = 高分辨率模式 (High-Resolution Mode, 默认)
+   [5] INT_REFEN : 内部参考电压使能
+       0 = 使用外部参考电压 (默认)
+       1 = 使用内部参考电压
+   [4] VREF_4V : 内部参考电压幅度选择
+       0 = 2.442V (默认)
+       1 = 4.0V (需满足 AVSS/AVDD 电压条件)
+   [3:0] COMP_TH : 输入电压故障检测阈值设置
+
+2. D_SYS_CFG (Address: 0Ch) - 数字系统配置
+   [7] WDT_EN : 看门狗定时器使能
+       0 = 禁用 (默认)
+       1 = 启用
+   [6] CRC_MODE : CRC 模式
+       0 = 仅校验设备字 (默认)
+       1 = 校验所有位
+   [1] FIXED : 固定帧格式使能
+       0 = 动态帧模式 (默认，未启用的通道不输出数据)
+       1 = 固定帧模式 (始终输出 6 个字，未启用通道数据为 0)
+   [0] CRC_EN : CRC 校验使能
+       0 = 禁用 (默认)
+       1 = 启用
+
+3. CLK1 (Address: 0Dh) - 时钟源配置
+   [7] CLKSRC : 时钟源选择
+       0 = 使用 XTAL1/CLKIN 引脚作为时钟源 (默认)
+       1 = 使用 SCLK 作为时钟源 (仅同步从机模式)
+   [6:1] Reserved : 0
+   [3:1] CLK_DIV : 系统时钟分频 (Input Clock -> ICLK)
+       设置输入时钟的分频系数，生成内部 ICLK。
+
+4. CLK2 (Address: 0Eh) - 调制器与采样率配置
+   [7:5] ICLK_DIV : 调制器时钟分频 (ICLK -> fMOD)
+       010 = fICLK / 4 (默认)
+       ... (详见手册 Table 30)
+   [3:0] OSR : 过采样率选择 (决定数据速率)
+       0010 = 1024
+       0100 = 768
+       0110 = 400
+       1000 = 256
+       ...
+       公式: Data Rate = fMOD / OSR
+
+5. ADC_ENA (Address: 0Fh) - 通道使能
+   [7:4] Reserved : 0
+   [3:0] ENA[3:0] : 通道使能位
+       Bit 0 = Channel 1
+       Bit 1 = Channel 2
+       Bit 2 = Channel 3
+       Bit 3 = Channel 4
+       1 = 启用, 0 = 禁用
+
+
+五、 数据读取与格式 (Data Readout Format)
+--------------------------------------------------------------------------------
+ADS131A04 在 SPI 模式下，每个数据帧通常包含多个 "Device Words"。
+字长由硬件引脚 M1 决定 (16位, 24位, 或 32位)。
+
+典型数据帧结构 (假设 24-bit 模式, Fixed Frame, CRC Enable):
+---------------------------------------------------------------
+| Word 1 | Word 2 | Word 3 | Word 4 | Word 5 | Word 6 |
+|--------|--------|--------|--------|--------|--------|
+| STATUS | DATA 1 | DATA 2 | DATA 3 | DATA 4 | CRC    |
+---------------------------------------------------------------
+
+1. Status Word (Word 1):
+   - 高 16 位有效。
+   - 包含 F_ADCIN, F_SPI, F_DRDY 等错误标志。
+   - 正常读取时应检查此状态字以确保数据有效。
+
+2. ADC Data (Word 2-5):
+   - 24 位补码格式 (Binary Two's Complement)。
+   - MSB First (最高位先出)。
+   - 7FFFFFh = 正满量程
+   - 000000h = 0V
+   - 800000h = 负满量程
+   - 电压计算公式:
+     V_in = (Code / 2^23) * (V_REF / Gain)
+
+3. CRC Word (Word 6):
+   - 仅当 D_SYS_CFG 中的 CRC_EN = 1 时出现。
+   - 算法：CRC-CCITT (Polynomial: X^16 + X^12 + X^5 + 1, Initial: 0xFFFF)。

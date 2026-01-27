@@ -917,10 +917,11 @@
         
         const chart = echarts.init(container);
         
-        // 生成频率轴（假设采样率5.12kHz，FFT长度1024）
-        const samplingRate = 5120;
-        const fftLength = snapshot.fft_data.length * 2;
-        const freqAxis = snapshot.fft_data.map((_, i) => (i * samplingRate / fftLength).toFixed(1));
+        // 生成频率轴：与“实时监测-频域分析”保持一致（5 Hz/bin）
+        // 说明：快照中只保存了部分频谱 bins（fft_data 数组），这里应按 bin->Hz 的固定分辨率映射，
+        // 否则用 samplingRate/fftLength 反推会因 fftLength 取值不一致导致频率轴偏差（你看到的×2问题）。
+        const FREQ_RES = 5.0; // Hz/bin
+        const freqAxis = snapshot.fft_data.map((_, i) => (i * FREQ_RES).toFixed(1));
         
         const option = {
             tooltip: {

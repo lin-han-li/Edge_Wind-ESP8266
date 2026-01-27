@@ -3150,6 +3150,31 @@
           </Files>
         </Group>
         <Group>
+          <GroupName>ADS131A0x</GroupName>
+          <Files>
+            <File>
+              <FileName>ADS131A04.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\ADS131A0x\ADS131A04.c</FilePath>
+            </File>
+            <File>
+              <FileName>mcp_myspi.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\ADS131A0x\mcp_myspi.c</FilePath>
+            </File>
+            <File>
+              <FileName>ADS131A04_EVB.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\HARDWORK\ADS131A0x\ADS131A04_EVB.h</FilePath>
+            </File>
+            <File>
+              <FileName>mcp_myspi.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\HARDWORK\ADS131A0x\mcp_myspi.h</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
           <GroupName>Application/User/FATFS/Target</GroupName>
           <GroupOption>
             <CommonProperty>
@@ -5421,6 +5446,11 @@
               <FileName>setup_scr_ServerConfig.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_ServerConfig.c</FilePath>
+            </File>
+            <File>
+              <FileName>setup_scr_ParamConfig.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HARDWORK\GUI-Guider_Runtime\src\generated\setup_scr_ParamConfig.c</FilePath>
             </File>
             <File>
               <FileName>setup_scr_DeviceConnect.c</FileName>

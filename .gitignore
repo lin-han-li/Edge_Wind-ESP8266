@@ -137,12 +137,13 @@ dmypy.json
 *.out
 *.map
 
+# 固件资源用的 .bin（字库/拼音/GUI/QSPI 资源等）不是“编译产物”，需要上传
+!STM32H750XBH6_ESP8266_FreeRTOS_LVGL9.4.0/tools/**/*.bin
+
 # Keil/MDK 编译中间产物（全工程通用）
 **/MDK-ARM/**/Objects/
 **/MDK-ARM/**/Listings/
 **/MDK-ARM/**/.dep/
-**/MDK-ARM/**/RTE/
-**/MDK-ARM/**/DebugConfig/
 **/MDK-ARM/**/*.d
 **/MDK-ARM/**/*.o
 **/MDK-ARM/**/*.obj
@@ -152,10 +153,7 @@ dmypy.json
 **/MDK-ARM/**/*.bak
 **/MDK-ARM/**/*.htm
 
-# Keil 工程生成的 GUI/用户态文件（不影响源码编译）
-**/MDK-ARM/**/*.uvguix.*
-**/MDK-ARM/**/*.uvgui.*
-**/MDK-ARM/**/*.uvoptx
+# Keil 工程生成的构建日志（可再生，忽略即可）
 **/MDK-ARM/**/*_build_log.htm
 **/MDK-ARM/**/*build_log*.htm
 **/MDK-ARM/**/*build_log*.txt
@@ -167,8 +165,7 @@ dmypy.json
 *.lib
 *.pdb
 
-# Keil 调试/配置文件（全局）
-*.uvoptx
+# Keil 调试/配置文件（例如 .uvoptx）：按你的要求“非编译产物都上传”，这里不忽略
 JLinkLog.txt
 JLinkSettings.ini
 
@@ -180,9 +177,7 @@ JLinkSettings.ini
 **/Debug/
 **/Release/
 
-# CMSIS-DSP 文档/示例（体积大、路径超长（>260字符）、运行时不需要）
-**/CMSIS-DSP/**/Documentation/
-**/CMSIS-DSP/**/Examples/
+# CMSIS-DSP 文档/示例：按你的要求“除了编译产物其余都上传”，这里不再忽略
 
 # esp8266_config.h：你说这是私人仓库、希望 clone 后固件侧也能直接编译运行
 # 所以这里不再忽略 esp8266_config.h（会提交到仓库）
@@ -191,11 +186,7 @@ JLinkSettings.ini
 !**/HARDWORK/W25Q256/
 !**/HARDWORK/W25Q256/**
 
-# EdgeWind UI 字体源文件（OTF/TTF 体积大，保留生成的 .c 即可）
-**/EdgeWind_UI/fonts/**/*.otf
-**/EdgeWind_UI/fonts/**/*.ttf
-**/EdgeWind_UI/fonts/CN/
-**/EdgeWind_UI/fonts/CN/**
+# EdgeWind UI 字体源文件：按你的要求“除了编译产物其余都上传”，这里不再忽略
 
 # Gemini 临时打包目录（如存在）
 Gemini_Edge_Wind_code/

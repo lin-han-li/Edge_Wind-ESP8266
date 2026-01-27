@@ -77,6 +77,65 @@ extern "C"
 #define ESP_HEARTBEAT_INTERVAL_MS 5000
 #endif
 
+/* ================= 通讯参数（运行时可配置） =================
+ * 这些参数默认由宏兜底（保持兼容），但实际运行会优先使用“运行时缓存值”，
+ * 缓存值由 SD 文件 0:/config/ui_param.cfg 加载并应用（见 ESP_CommParams_* API）。
+ */
+#ifndef ESP_MIN_SEND_INTERVAL_MS
+#define ESP_MIN_SEND_INTERVAL_MS 200
+#endif
+
+#ifndef ESP_HTTP_TIMEOUT_MS_DEFAULT
+#define ESP_HTTP_TIMEOUT_MS_DEFAULT 1200
+#endif
+
+#ifndef ESP_CHUNK_KB_DEFAULT
+#define ESP_CHUNK_KB_DEFAULT 4
+#endif
+
+#ifndef ESP_CHUNK_DELAY_MS_DEFAULT
+#define ESP_CHUNK_DELAY_MS_DEFAULT 10
+#endif
+
+typedef struct
+{
+    uint32_t heartbeat_ms;      /* 心跳间隔 ms */
+    uint32_t min_interval_ms;   /* 发包限频 ms */
+    uint32_t http_timeout_ms;   /* 回包超时 ms（用于 HTTP 门控超时放行） */
+    uint32_t hardreset_sec;     /* 无响应复位阈值 s */
+    uint32_t wave_step;         /* 波形降采样步进：1=全量，4=每4点取1点 */
+    uint32_t chunk_kb;          /* 分段发送：每段 KB（0=关闭分段） */
+    uint32_t chunk_delay_ms;    /* 分段发送：每段后延时 ms */
+} ESP_CommParams_t;
+
+/* 读取/写入运行时缓存（线程安全：内部使用 32-bit 原子写） */
+void ESP_CommParams_Get(ESP_CommParams_t *out);
+void ESP_CommParams_Apply(const ESP_CommParams_t *p);
+
+/* 从 SD 加载并应用（不会影响 WiFi/Server 等 SystemConfig_t） */
+bool ESP_CommParams_LoadFromSD(void);
+
+/* 快捷 getter：给内部发送/心跳/自恢复逻辑使用 */
+uint32_t ESP_CommParams_HeartbeatMs(void);
+uint32_t ESP_CommParams_MinIntervalMs(void);
+uint32_t ESP_CommParams_HttpTimeoutMs(void);
+uint32_t ESP_CommParams_HardResetSec(void);
+uint32_t ESP_CommParams_WaveStep(void);
+uint32_t ESP_CommParams_ChunkKb(void);
+uint32_t ESP_CommParams_ChunkDelayMs(void);
+
+/* ================= 断电重连/上报状态持久化（SD 标志位） =================
+ * 文件：0:/config/ui_autoreport.cfg
+ *   AUTO_RECONNECT=0/1   （用户开关）
+ *   LAST_REPORTING=0/1   （上次上电前是否处于上报状态）
+ */
+bool ESP_AutoReconnect_Read(bool *auto_reconnect_en, bool *last_reporting);
+bool ESP_AutoReconnect_SetEnabled(bool auto_reconnect_en);
+bool ESP_AutoReconnect_SetLastReporting(bool last_reporting);
+
+/* 启动前置：从 SD 读取 WiFi/Server 配置（UI 保存的文件）并应用到 ESP_Config */
+bool ESP_Config_LoadFromSD_UIFiles(void);
+
 // 数据采样与发送参数
 #define WAVEFORM_POINTS 1024 // 本地模拟生成的波形点数 (用于高精度 FFT 计算)
 /* * ⚠️ 关键参数 WAVEFORM_SEND_STEP:
@@ -143,6 +202,10 @@ extern "C"
     bool ESP_UI_SendCmd(esp_ui_cmd_t cmd);      // UI 线程调用（不阻塞）
     void ESP_UI_TaskPoll(void);                 // 在 ESP8266_Task 循环里调用（处理UI命令）
     bool ESP_UI_IsReporting(void);              // 查询当前是否在上报状态
+    bool ESP_UI_IsWiFiOk(void);                 // 查询 WiFi 步骤是否已成功
+    bool ESP_UI_IsTcpOk(void);                  // 查询 TCP 步骤是否已成功
+    bool ESP_UI_IsRegOk(void);                  // 查询 REG 步骤是否已成功
+    const char *ESP_UI_NodeId(void);            // 查询当前 NodeId（若为空返回 "--"）
     void ESP_UI_InvalidateReg(void);            // UI 用：注册过期/停止上报过久时清除就绪标志，要求重新注册
 
 #ifdef __cplusplus

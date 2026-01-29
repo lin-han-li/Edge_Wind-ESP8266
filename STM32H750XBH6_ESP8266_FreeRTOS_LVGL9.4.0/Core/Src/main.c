@@ -54,6 +54,7 @@
 
 #include "esp8266.h"
 #include "ADS131A04_EVB.h"
+#include "SPI_AD7606.h"
 
 /* USER CODE END Includes */
 
@@ -84,6 +85,11 @@ const osMutexAttr_t Thread_Mutex_attr = {
     NULL,               // memory for control block       //
     0U                  // size for control block        //
 };
+
+#if USE_AD7606
+static volatile uint8_t g_ad7606_started = 0;
+static uint16_t g_ad7606_raw[8];
+#endif
 
 /* USER CODE END PV */
 
@@ -163,7 +169,12 @@ int main(void)
   LCD_RGB_Init();                          //
   Touch_Init();                            //
 
+#if USE_AD7606
+  AD7606_Init();
+  g_ad7606_started = 0;
+#else
   ADS13_PowerOnInit();
+#endif
   number = 0;
   number2 = 0;
   ADS131A04_flag = 0;
@@ -330,9 +341,30 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     }
   if (htim->Instance == TIM2)
   {
+#if USE_AD7606
+    if (!g_ad7606_started)
+    {
+      AD7606_StartConv();
+      g_ad7606_started = 1;
+      return;
+    }
+    if (READ_AD7606_BUSY)
+    {
+      g_ad7606_miss++;
+      return;
+    }
+
+    AD7606_ReadRaw8(g_ad7606_raw);
+    AD7606_StartConv(); /* 立即启动下一次转换，缩短空档 */
+    g_ad7606_frames++;
+
+    ADS131A04_Buf[0] = AD7606_RawToVoltsF(g_ad7606_raw[0]);
+    ADS131A04_Buf[1] = AD7606_RawToVoltsF(g_ad7606_raw[1]);
+    ADS131A04_Buf[2] = AD7606_RawToVoltsF(g_ad7606_raw[2]) * 465.95f / 473.20f;
+    ADS131A04_Buf[3] = AD7606_RawToVoltsF(g_ad7606_raw[3]);
+
     if (ADS131A04_flag == 0)
     {
-      Read_ADS131A0X_Value(ADS131A04_Buf);
       for (uint8_t ch = 0; ch < 4; ch++)
       {
         ADSA_B[ch][number] = ADS131A04_Buf[ch];
@@ -346,9 +378,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         number2 = 0;
       }
     }
-    if (ADS131A04_flag2 == 0)
+    else if (ADS131A04_flag2 == 0)
     {
-      Read_ADS131A0X_Value(ADS131A04_Buf);
       for (uint8_t ch = 0; ch < 4; ch++)
       {
         ADSA_B2[ch][number2] = ADS131A04_Buf[ch];
@@ -362,6 +393,42 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         number2 = 0;
       }
     }
+#else
+    if (ADS131A04_flag == 0)
+    {
+      uint8_t ok = (Read_ADS131A0X_Value(ADS131A04_Buf) != 0u);
+      for (uint8_t ch = 0; ch < 4; ch++)
+      {
+        ADSA_B[ch][number] = ADS131A04_Buf[ch];
+      }
+      ADS131A04_InterpUpdate(ADSA_B, (uint16_t)number, ADS131A04_Buf, ok);
+      number++;
+      if (number == 1024)
+      {
+        ADS131A04_flag = 1;
+        ADS131A04_flag2 = 0;
+        number = 0;
+        number2 = 0;
+      }
+    }
+    else if (ADS131A04_flag2 == 0)
+    {
+      uint8_t ok = (Read_ADS131A0X_Value(ADS131A04_Buf) != 0u);
+      for (uint8_t ch = 0; ch < 4; ch++)
+      {
+        ADSA_B2[ch][number2] = ADS131A04_Buf[ch];
+      }
+      ADS131A04_InterpUpdate(ADSA_B2, (uint16_t)number2, ADS131A04_Buf, ok);
+      number2++;
+      if (number2 == 1024)
+      {
+        ADS131A04_flag2 = 2;
+        ADS131A04_flag = 0;
+        number = 0;
+        number2 = 0;
+      }
+    }
+#endif
   }
   /* USER CODE END Callback 1 */
 }

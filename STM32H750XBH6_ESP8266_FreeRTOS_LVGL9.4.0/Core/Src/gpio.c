@@ -51,20 +51,22 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
-  __HAL_RCC_GPIOG_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOJ_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOG_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(ESP8266_RST_GPIO_Port, ESP8266_RST_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, ADS131A04_CS_Pin|ADS131A04_DIN_Pin|ADS131A04_REST_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, AD7606_CS_Pin|AD7606_OS1_Pin|AD7606_REST_Pin|AD7606_CONVEST_A_Pin
+                          |AD7606_CONVEST_B_Pin|AD7606_OS0_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(ADS131A04_SCLK_GPIO_Port, ADS131A04_SCLK_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, AD7606_SCLK_Pin|AD7606_OS2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : ESP8266_RST_Pin */
   GPIO_InitStruct.Pin = ESP8266_RST_Pin;
@@ -73,34 +75,33 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(ESP8266_RST_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : ADS131A04_DRDY_Pin */
-  GPIO_InitStruct.Pin = ADS131A04_DRDY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  /*Configure GPIO pins : AD7606_CS_Pin AD7606_OS1_Pin AD7606_REST_Pin AD7606_CONVEST_A_Pin
+                           AD7606_CONVEST_B_Pin AD7606_OS0_Pin */
+  GPIO_InitStruct.Pin = AD7606_CS_Pin|AD7606_OS1_Pin|AD7606_REST_Pin|AD7606_CONVEST_A_Pin
+                          |AD7606_CONVEST_B_Pin|AD7606_OS0_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(ADS131A04_DRDY_GPIO_Port, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ADS131A04_CS_Pin ADS131A04_DIN_Pin ADS131A04_REST_Pin */
-  GPIO_InitStruct.Pin = ADS131A04_CS_Pin|ADS131A04_DIN_Pin|ADS131A04_REST_Pin;
+  /*Configure GPIO pins : AD7606_SCLK_Pin AD7606_OS2_Pin */
+  GPIO_InitStruct.Pin = AD7606_SCLK_Pin|AD7606_OS2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : ADS131A04_DONE_Pin ADS131A04_DOUT_Pin */
-  GPIO_InitStruct.Pin = ADS131A04_DONE_Pin|ADS131A04_DOUT_Pin;
+  /*Configure GPIO pin : AD7606_BUSY_Pin */
+  GPIO_InitStruct.Pin = AD7606_BUSY_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+  HAL_GPIO_Init(AD7606_BUSY_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : ADS131A04_SCLK_Pin */
-  GPIO_InitStruct.Pin = ADS131A04_SCLK_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  /*Configure GPIO pin : AD7606_DB7_Pin */
+  GPIO_InitStruct.Pin = AD7606_DB7_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  HAL_GPIO_Init(ADS131A04_SCLK_GPIO_Port, &GPIO_InitStruct);
-
-  /*AnalogSwitch Config */
-  HAL_SYSCFG_AnalogSwitchConfig(SYSCFG_SWITCH_PC3, SYSCFG_SWITCH_PC3_CLOSE);
+  HAL_GPIO_Init(AD7606_DB7_GPIO_Port, &GPIO_InitStruct);
 
 }
 

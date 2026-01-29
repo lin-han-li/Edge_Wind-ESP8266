@@ -2437,15 +2437,70 @@
         const buf = _getTimeSeriesBuffer(waveform.length);
         const timeAxis = buf.axis;
         const timeSeriesData = buf.data;
+        let yMin = Infinity;
+        let yMax = -Infinity;
         for (let i = 0; i < waveform.length; i++) {
             // 保持 x 不变，仅更新 y
-            timeSeriesData[i][1] = waveform[i];
+            const y = waveform[i];
+            timeSeriesData[i][1] = y;
+            const n = Number(y);
+            if (Number.isFinite(n)) {
+                if (n < yMin) yMin = n;
+                if (n > yMax) yMax = n;
+            }
+        }
+        if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+            yMin = 0;
+            yMax = 0;
+        }
+
+        // 计算“自动窗口”(用于重置)：基于当前数据范围 + 余量，并确保包含 0
+        // 规则：
+        // - 全正：下限固定为 0，仅扩上限
+        // - 全负：上限固定为 0，仅扩下限
+        // - 跨零：上下同时扩展
+        let autoMin = yMin;
+        let autoMax = yMax;
+        if (yMin >= 0) {
+            autoMin = 0;
+            autoMax = yMax;
+        } else if (yMax <= 0) {
+            autoMax = 0;
+            autoMin = yMin;
+        }
+        let autoSpan = autoMax - autoMin;
+        if (!(autoSpan > 0)) {
+            autoSpan = Math.max(Math.abs(autoMax), Math.abs(autoMin), 1);
+        }
+        const pad = Math.max(autoSpan * 0.1, 0.1);
+        if (yMin >= 0) {
+            autoMin = 0;
+            autoMax = autoMax + pad;
+        } else if (yMax <= 0) {
+            autoMax = 0;
+            autoMin = autoMin - pad;
+        } else {
+            autoMin -= pad;
+            autoMax += pad;
+        }
+
+        // 计算“可缩放全量范围”(用于滚轮缩放上限)：比自动窗口更大
+        const fullSpan = Math.max((autoMax - autoMin) * 10, 10);
+        let fullMin = autoMin - (fullSpan - (autoMax - autoMin)) / 2;
+        let fullMax = autoMax + (fullSpan - (autoMax - autoMin)) / 2;
+        fullMin = Math.min(fullMin, 0);
+        fullMax = Math.max(fullMax, 0);
+        if (!(fullMax > fullMin)) {
+            fullMin = autoMin;
+            fullMax = autoMax + 1;
         }
 
         // 把“全量X范围”显式写入图表实例，供缩放工具使用（保证滚轮缩小一定能回到全范围）
         // 注意：这里 max 用最后一个采样点的时间（例如约 199.8ms），与图上显示的最大值一致。
         if (timeDomainChart) {
             timeDomainChart.__edgewindFullExtentX = { min: 0, max: timeAxis[timeAxis.length - 1] };
+            timeDomainChart.__edgewindFullExtentY = { min: fullMin, max: fullMax };
+            timeDomainChart.__edgewindAutoWindowY = { min: autoMin, max: autoMax };
         }
 
         // 4. Determine color (跟随选中的选项卡)
@@ -2509,7 +2564,10 @@
                         // 同理：Y 轴也不做过滤，仅改变视窗
                         filterMode: 'none',
                         zoomOnMouseWheel: false,
-                        moveOnMouseMove: false
+                        moveOnMouseMove: false,
+                        // 初始化时的“自动窗口”（重置按钮会回到此范围）
+                        startValue: autoMin,
+                        endValue: autoMax
                     }
                 ],
                 xAxis: { 
@@ -2523,7 +2581,9 @@
                     name: `${channel.label} (${channel.unit})`,
                     // 时域图必须能看到 0（规则要求：禁止 scale:true）
                     scale: false,
-                    min: (val) => Math.min(0, val.min),
+                    // 允许滚轮缩放到更大范围：y 轴全量范围由 fullMin/fullMax 控制
+                    min: fullMin,
+                    max: fullMax,
                     splitLine: { show: true } 
                 },
                 series: [{
@@ -2547,7 +2607,11 @@
                     top: 5 
                 },
                 xAxis: { name: '时间 (ms)' },
-                yAxis: { name: `${channel.label} (${channel.unit})` },
+                yAxis: { 
+                    name: `${channel.label} (${channel.unit})`,
+                    min: fullMin,
+                    max: fullMax
+                },
                 series: [{
                     data: timeSeriesData,
                     lineStyle: { width: 1.5, color: lineColor }
@@ -2671,13 +2735,16 @@
             // 确保正确处理空数组或无效数据
             const maxVal = sanitized.length > 0 ? Math.max(...sanitized) : 0;
             const yAxisMax = maxVal > 0 ? maxVal * 1.1 : 50;
+            const autoMax = yAxisMax;
+            const fullMax = Math.max(autoMax * 10, 10);
 
             // 显式提供“全量范围”，保证滚轮缩小一定能回到全范围（与时域一致）
             if (frequencyDomainChart) {
                 const xMin = frequencies.length ? frequencies[0] : 0;
                 const xMax = frequencies.length ? frequencies[frequencies.length - 1] : 0;
                 frequencyDomainChart.__edgewindFullExtentX = { min: xMin, max: xMax };
-                frequencyDomainChart.__edgewindFullExtentY = { min: 0, max: yAxisMax };
+                frequencyDomainChart.__edgewindFullExtentY = { min: 0, max: fullMax };
+                frequencyDomainChart.__edgewindAutoWindowY = { min: 0, max: autoMax };
             }
         
         // 根据当前选中的数据源确定颜色（跟随选项卡）
@@ -2756,7 +2823,7 @@
                 nameGap: 50,
                 nameTextStyle: { color: '#64748b' },
                 min: 0,
-                max: yAxisMax,
+                max: fullMax,
                 splitLine: {
                     show: true,
                     lineStyle: { type: 'dashed' }
@@ -2778,7 +2845,10 @@
                     filterMode: 'none',
                     zoomOnMouseWheel: false,
                     moveOnMouseMove: false,
-                    moveOnMouseWheel: false
+                    moveOnMouseWheel: false,
+                    // 初始化时的“自动窗口”（重置按钮会回到此范围）
+                    startValue: 0,
+                    endValue: autoMax
                 }
             ],
             series: [{
@@ -2835,6 +2905,9 @@
         
         const chartDom = document.getElementById('time-domain-chart');
         if (!chartDom) return;
+
+        // 已由 setupChartZoom 接管滚轮/双击/拖拽，避免重复绑定导致缩放冲突
+        return;
         
         let isOverXAxis = false;
         let isOverYAxis = false;
@@ -3083,14 +3156,38 @@
         
         const currentOption = timeDomainChart.getOption();
         const currentDataZoom = currentOption.dataZoom || [];
+        const autoY = timeDomainChart.__edgewindAutoWindowY || null;
+        const autoMin = autoY && Number.isFinite(Number(autoY.min)) ? Number(autoY.min) : null;
+        const autoMax = autoY && Number.isFinite(Number(autoY.max)) ? Number(autoY.max) : null;
         
-        // 重置所有inside类型的dataZoom到全范围（0-100%）
+        // 重置：X 轴回到全范围；Y 轴回到“自动窗口”（与当前数据匹配）
         const newDataZoom = currentDataZoom.map(dz => {
-            if (dz.type === 'inside') {
+            if (dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0) {
                 return {
                     ...dz,
                     start: 0,
-                    end: 100
+                    end: 100,
+                    startValue: null,
+                    endValue: null
+                };
+            }
+            if (dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0) {
+                // 若拿不到自动窗口，退回全范围
+                if (autoMin === null || autoMax === null || autoMin === autoMax) {
+                    return {
+                        ...dz,
+                        start: 0,
+                        end: 100,
+                        startValue: null,
+                        endValue: null
+                    };
+                }
+                return {
+                    ...dz,
+                    start: 0,
+                    end: 100,
+                    startValue: autoMin,
+                    endValue: autoMax
                 };
             }
             return dz;
@@ -3111,16 +3208,37 @@
         
         const currentOption = frequencyDomainChart.getOption();
         const currentDataZoom = currentOption.dataZoom || [];
+        const autoY = frequencyDomainChart.__edgewindAutoWindowY || null;
+        const autoMin = autoY && Number.isFinite(Number(autoY.min)) ? Number(autoY.min) : null;
+        const autoMax = autoY && Number.isFinite(Number(autoY.max)) ? Number(autoY.max) : null;
         
-        // 重置所有inside类型的dataZoom到全范围（0-100%）
+        // 重置：X 轴回到全范围；Y 轴回到“自动窗口”（与当前数据匹配）
         const newDataZoom = currentDataZoom.map(dz => {
-            if (dz.type === 'inside') {
+            if (dz.type === 'inside' && dz.xAxisIndex && dz.xAxisIndex[0] === 0) {
                 return {
                     ...dz,
                     start: 0,
                     end: 100,
                     startValue: null,
                     endValue: null
+                };
+            }
+            if (dz.type === 'inside' && dz.yAxisIndex && dz.yAxisIndex[0] === 0) {
+                if (autoMin === null || autoMax === null || autoMin === autoMax) {
+                    return {
+                        ...dz,
+                        start: 0,
+                        end: 100,
+                        startValue: null,
+                        endValue: null
+                    };
+                }
+                return {
+                    ...dz,
+                    start: 0,
+                    end: 100,
+                    startValue: autoMin,
+                    endValue: autoMax
                 };
             }
             return dz;

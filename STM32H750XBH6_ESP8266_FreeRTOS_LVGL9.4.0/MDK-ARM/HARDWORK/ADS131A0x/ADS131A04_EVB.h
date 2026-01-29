@@ -266,6 +266,22 @@ uint8_t ADS131A04_ReadStatS(uint8_t *stat_s);
 uint8_t ADS131A04_ReadErrorCnt(uint8_t *err_cnt);
 uint8_t ADS131A04_ReadStatM2(uint8_t *stat_m2);
 
+/* ---------------- 软SPI 采集诊断（坏帧统计） ----------------
+ * - total: Read_ADS131A0X_Value 调用次数（采集帧数）
+ * - bad:   STATUS 判定为坏帧的次数（返回 0）
+ * - last_status: 最近一次坏帧的 32-bit status word（recBuffer[0..3]）
+ * - out24: 最近一次坏帧的 24 字节原始帧（可为 NULL）
+ */
+void ADS131A04_GetSoftSpiBadFrameStats(uint32_t *total, uint32_t *bad, uint32_t *last_status, uint8_t out24[24]);
+void ADS131A04_ResetSoftSpiBadFrameStats(void);
+
+/* ---------------- 坏帧插值替代（线性插值） ----------------
+ * 在 TIM2 采样写入时调用：若坏帧连续出现，待下一好帧到来后对坏帧段插值回写。
+ */
+void ADS131A04_InterpUpdate(float (*buf)[1024], uint16_t idx, const float sample[4], uint8_t is_good);
+void ADS131A04_GetInterpStats(uint32_t *runs, uint32_t *points, uint32_t *max_run);
+void ADS131A04_ResetInterpStats(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2,6 +2,7 @@
 #include "delay.h"
 #include "main.h"
 
+#if !USE_AD7606
 void ADS131A0X_WaitDRDY(void);
 void ADS131A0X_DelaySCLK(void);
 
@@ -44,3 +45,4 @@ uint8_t ADS131A0X_SendRecive_8Bit(uint8_t _data)
 	}
 	return read;
 }
+#endif /* !USE_AD7606 */

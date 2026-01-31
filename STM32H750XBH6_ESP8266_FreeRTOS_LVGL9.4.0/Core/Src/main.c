@@ -53,8 +53,8 @@
 #include <stdio.h>
 
 #include "esp8266.h"
-#include "ADS131A04_EVB.h"
 #include "SPI_AD7606.h"
+#include "ad_acq_buffers.h"
 
 /* USER CODE END Includes */
 
@@ -172,13 +172,7 @@ int main(void)
 #if USE_AD7606
   AD7606_Init();
   g_ad7606_started = 0;
-#else
-  ADS13_PowerOnInit();
 #endif
-  number = 0;
-  number2 = 0;
-  ADS131A04_flag = 0;
-  ADS131A04_flag2 = 2;
   HAL_TIM_Base_Start_IT(&htim2);
 
   printf("System Start...\r\n");
@@ -384,41 +378,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       {
         ADSA_B2[ch][number2] = ADS131A04_Buf[ch];
       }
-      number2++;
-      if (number2 == 1024)
-      {
-        ADS131A04_flag2 = 2;
-        ADS131A04_flag = 0;
-        number = 0;
-        number2 = 0;
-      }
-    }
-#else
-    if (ADS131A04_flag == 0)
-    {
-      uint8_t ok = (Read_ADS131A0X_Value(ADS131A04_Buf) != 0u);
-      for (uint8_t ch = 0; ch < 4; ch++)
-      {
-        ADSA_B[ch][number] = ADS131A04_Buf[ch];
-      }
-      ADS131A04_InterpUpdate(ADSA_B, (uint16_t)number, ADS131A04_Buf, ok);
-      number++;
-      if (number == 1024)
-      {
-        ADS131A04_flag = 1;
-        ADS131A04_flag2 = 0;
-        number = 0;
-        number2 = 0;
-      }
-    }
-    else if (ADS131A04_flag2 == 0)
-    {
-      uint8_t ok = (Read_ADS131A0X_Value(ADS131A04_Buf) != 0u);
-      for (uint8_t ch = 0; ch < 4; ch++)
-      {
-        ADSA_B2[ch][number2] = ADS131A04_Buf[ch];
-      }
-      ADS131A04_InterpUpdate(ADSA_B2, (uint16_t)number2, ADS131A04_Buf, ok);
       number2++;
       if (number2 == 1024)
       {

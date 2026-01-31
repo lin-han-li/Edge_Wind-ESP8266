@@ -12,8 +12,8 @@
  */
 
 #include "esp8266.h"
-#include "ADS131A04_EVB.h"
 #include "SPI_AD7606.h"
+#include "ad_acq_buffers.h"
 #include "usart.h"
 #include "arm_math.h"
 #include "cmsis_os.h"
@@ -30,7 +30,6 @@
 extern UART_HandleTypeDef huart2;
 #define ESP_PRINT_WAVEFORM_POINTS 0
 #define ADS_BADFRAME_MONITOR 1
-/* ADS 软SPI坏帧监控：每秒打印一次 total/bad 与最近坏帧 status */
 #ifndef ADS_BADFRAME_MONITOR
 #define ADS_BADFRAME_MONITOR 0
 #endif
@@ -1366,14 +1365,13 @@ void ESP_Console_Poll(void)
 #endif
 
 #if (ADS_BADFRAME_MONITOR)
-    /* 每 1s 输出一次坏帧统计（在任务上下文输出，避免在TIM2 ISR里printf影响时序） */
+    /* 每 1s 输出一次采样统计（在任务上下文输出，避免在TIM2 ISR里printf影响时序） */
     {
         static uint32_t last_print = 0;
         uint32_t now2 = HAL_GetTick();
         if ((now2 - last_print) >= 1000u)
         {
             last_print = now2;
-#if USE_AD7606
             static uint32_t last_frames = 0, last_miss = 0;
             uint32_t frames = 0, miss = 0;
             AD7606_GetStats(&frames, &miss);
@@ -1384,15 +1382,6 @@ void ESP_Console_Poll(void)
                    (unsigned long)miss, (unsigned long)dm);
             last_frames = frames;
             last_miss = miss;
-#else
-            uint32_t total = 0, bad = 0, last_status = 0;
-            uint32_t runs = 0, points = 0, max_run = 0;
-            ADS131A04_GetSoftSpiBadFrameStats(&total, &bad, &last_status, NULL);
-            ADS131A04_GetInterpStats(&runs, &points, &max_run);
-            printf("[ADS softSPI] total=%lu bad=%lu last_status=0x%08lX interp_runs=%lu interp_pts=%lu max_run=%lu\r\n",
-                   (unsigned long)total, (unsigned long)bad, (unsigned long)last_status,
-                   (unsigned long)runs, (unsigned long)points, (unsigned long)max_run);
-#endif
         }
     }
 #endif

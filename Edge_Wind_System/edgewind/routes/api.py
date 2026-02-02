@@ -40,6 +40,8 @@ _last_bad_frame_log_ts = {}  # {node_id: ts}：坏帧诊断限频日志
 # 全局变量（将从app传入）
 active_nodes = {}  # 将在app.py中初始化并传入
 node_commands = {}  # 将在app.py中初始化并传入
+node_report_modes = {}  # {node_id: 'summary'|'full'}
+DEFAULT_REPORT_MODE = 'summary'
 
 # 节点超时时间（秒）
 # 说明：此前为 10s，网络/设备偶发抖动（或一次心跳解析失败）就会导致节点被清空，前端表现为“运行一段时间后停机/无节点”。
@@ -224,14 +226,22 @@ def _lighten_channels(channels):
         })
     return out
 
-def init_api_blueprint(app, socketio, executor, nodes, commands):
+def init_api_blueprint(app, socketio, executor, nodes, commands, report_modes):
     """初始化API蓝图的全局变量"""
-    global active_nodes, node_commands, db_executor, socketio_instance, app_instance
+    global active_nodes, node_commands, node_report_modes, db_executor, socketio_instance, app_instance
     active_nodes = nodes
     node_commands = commands
+    node_report_modes = report_modes
     db_executor = executor
     socketio_instance = socketio
     app_instance = app
+
+
+def _get_report_mode(node_id: str | None) -> str:
+    if not node_id:
+        return DEFAULT_REPORT_MODE
+    mode = (node_report_modes.get(node_id) or '').strip().lower()
+    return mode if mode in ('summary', 'full') else DEFAULT_REPORT_MODE
 
 
 def _device_auth_or_401():
@@ -494,6 +504,7 @@ def upload_data():
                     'status': 'faulty' if curr_fault != 'E00' else 'online',
                     'fault_code': curr_fault,
                     'timestamp': current_timestamp,
+                    'report_mode': _get_report_mode(device_id),
                     'metrics': {
                         'voltage': float((data or {}).get('voltage', 0) or 0),
                         'voltage_neg': float((data or {}).get('voltage_neg', 0) or 0),
@@ -515,6 +526,7 @@ def upload_data():
             # ack：设备已恢复正常，则认为 reset 已执行
             if cmd == 'reset' and (fault_code == 'E00'):
                 node_commands.pop(device_id, None)
+        resp['report_mode'] = _get_report_mode(device_id)
         return jsonify(resp), 200
 
     except Exception as e:
@@ -560,6 +572,7 @@ def node_heartbeat():
             # 剥离大数组，只保留必须元数据和值（便于概览/订阅初始数据）
             if 'channels' in data_light:
                 data_light['channels'] = _lighten_channels(data_light.get('channels'))
+            data_light['report_mode'] = _get_report_mode(node_id)
             active_nodes[node_id] = {
                 'timestamp': current_timestamp,
                 'status': data.get('status', 'offline'),
@@ -567,6 +580,7 @@ def node_heartbeat():
                 'data': data_light
             }
         else:
+            data['report_mode'] = _get_report_mode(node_id)
             active_nodes[node_id] = {
                 'timestamp': current_timestamp,
                 'status': data.get('status', 'offline'),
@@ -778,6 +792,7 @@ def node_heartbeat():
                 'status': data.get('status', 'online'),
                 'fault_code': fault_code,
                 'timestamp': current_timestamp,
+                'report_mode': _get_report_mode(node_id),
                 'metrics': {
                     'voltage': processed_data.get('voltage', 0),
                     'voltage_neg': processed_data.get('voltage_neg', 0),
@@ -814,6 +829,7 @@ def node_heartbeat():
             response_payload['command'] = cmd
             if cmd == 'reset' and fault_code == 'E00':
                 node_commands.pop(node_id, None)
+        response_payload['report_mode'] = _get_report_mode(node_id)
         
         # 9. 节流更新数据库设备心跳（避免 50Hz 高频心跳把 SQLite 打爆）
         last_db = _last_db_heartbeat_ts.get(node_id, 0)
@@ -927,6 +943,7 @@ def get_active_nodes():
         for node_id, node_info in active_nodes.items():
             node_data = node_info['data'].copy()
             node_data['node_id'] = node_id
+            node_data['report_mode'] = _get_report_mode(node_id)
             active_nodes_list.append(node_data)
         
         return jsonify({
@@ -938,6 +955,52 @@ def get_active_nodes():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/nodes/report_mode', methods=['POST'])
+@login_required
+def set_node_report_mode():
+    """设置节点上报模式：summary/full（仅管理员页面调用）"""
+    try:
+        payload = request.get_json() or {}
+        node_id = _normalize_node_id(payload.get('node_id') or payload.get('device_id'))
+        mode = (payload.get('mode') or '').strip().lower()
+
+        if not node_id:
+            return jsonify({'success': False, 'error': 'Missing node_id'}), 400
+        if len(node_id) > 100:
+            return jsonify({'success': False, 'error': 'node_id too long (max 100)'}), 400
+        if mode not in ('summary', 'full'):
+            return jsonify({'success': False, 'error': 'Invalid mode'}), 400
+
+        node_report_modes[node_id] = mode
+
+        # 同步到 active_nodes 的轻量数据（便于页面立即刷新）
+        if node_id in active_nodes:
+            try:
+                active_nodes[node_id]['data']['report_mode'] = mode
+            except Exception:
+                pass
+
+        # 主动推送给前端，立即刷新按钮状态
+        try:
+            if socketio_instance:
+                node_info = active_nodes.get(node_id) or {}
+                socketio_instance.emit('node_status_update', {
+                    'node_id': node_id,
+                    'status': node_info.get('status', 'online'),
+                    'fault_code': node_info.get('fault_code', 'E00'),
+                    'timestamp': time.time(),
+                    'report_mode': mode
+                }, namespace='/')
+        except Exception:
+            pass
+
+        return jsonify({'success': True, 'node_id': node_id, 'report_mode': mode}), 200
+
+    except Exception as e:
+        logger.exception(f"[/api/nodes/report_mode] 失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ==================== 知识图谱API ====================

@@ -182,34 +182,45 @@
         <!-- 底部：波形监控 (标签页界面) -->
         <div class="card mb-3">
             <div class="card-header bg-dark text-white">
-                <ul class="nav nav-tabs card-header-tabs border-0" role="tablist">
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link active text-white" 
-                                id="timeTab" 
-                                data-bs-toggle="tab" 
-                                data-bs-target="#timeChartPane" 
-                                type="button" 
-                                role="tab" 
-                                aria-controls="timeChartPane" 
-                                aria-selected="true"
-                                onclick="switchChartTab('time')">
-                            <i class="bi bi-graph-up"></i> 时域分析 (Time Domain)
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                    <ul class="nav nav-tabs card-header-tabs border-0" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active text-white" 
+                                    id="timeTab" 
+                                    data-bs-toggle="tab" 
+                                    data-bs-target="#timeChartPane" 
+                                    type="button" 
+                                    role="tab" 
+                                    aria-controls="timeChartPane" 
+                                    aria-selected="true"
+                                    onclick="switchChartTab('time')">
+                                <i class="bi bi-graph-up"></i> 时域分析 (Time Domain)
+                            </button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link text-white" 
+                                    id="freqTab" 
+                                    data-bs-toggle="tab" 
+                                    data-bs-target="#freqChartPane" 
+                                    type="button" 
+                                    role="tab" 
+                                    aria-controls="freqChartPane" 
+                                    aria-selected="false"
+                                    onclick="switchChartTab('freq')">
+                                <i class="bi bi-bar-chart"></i> 频域分析 (FFT Spectrum)
+                            </button>
+                        </li>
+                    </ul>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Report mode controls">
+                        <button class="btn btn-outline-light" id="btn-request-full" type="button">
+                            <i class="bi bi-cloud-download"></i> 请求全量
                         </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link text-white" 
-                                id="freqTab" 
-                                data-bs-toggle="tab" 
-                                data-bs-target="#freqChartPane" 
-                                type="button" 
-                                role="tab" 
-                                aria-controls="freqChartPane" 
-                                aria-selected="false"
-                                onclick="switchChartTab('freq')">
-                            <i class="bi bi-bar-chart"></i> 频域分析 (FFT Spectrum)
+                        <button class="btn btn-outline-light" id="btn-request-summary" type="button">
+                            <i class="bi bi-slash-circle"></i> 关闭请求
                         </button>
-                    </li>
-                </ul>
+                    </div>
+                    <span class="small text-light" id="report-mode-indicator">当前模式：摘要</span>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div class="tab-content">
@@ -274,6 +285,11 @@
         return urlParams.get(param);
     }
 
+    function getCsrfToken() {
+        const el = document.querySelector('meta[name="csrf-token"]');
+        return el ? (el.getAttribute('content') || '') : '';
+    }
+
     // ========== 全局状态 ==========
     let currentNodeId = null;
     // Global State: Default to viewing positive voltage
@@ -287,6 +303,8 @@
     let activeTab = 'time';  // 当前激活的标签页：'time' 或 'freq'
     let lastCachedData = null;  // 关键修复：缓存最新数据包，用于即时切换
     let nodeFaultHistory = {};  // 存储每个边缘节点的最后已知故障代码：{ "STM32_Node_001": "E00" }
+    let reportModeByNode = {};  // {nodeId: 'summary'|'full'}
+    let currentReportMode = 'summary';
 
     // ========== 报警阈值（来自系统设置）==========
     // 说明：
@@ -301,6 +319,97 @@
         voltageHighNeg: false,
         leakageHigh: false
     };
+    
+    function setReportModeButtonState(mode) {
+        const btnFull = document.getElementById('btn-request-full');
+        const btnSummary = document.getElementById('btn-request-summary');
+        const indicator = document.getElementById('report-mode-indicator');
+        if (!btnFull || !btnSummary) return;
+
+        const normalized = (mode || 'summary').toLowerCase();
+        const isFull = normalized === 'full';
+
+        btnFull.classList.toggle('btn-light', isFull);
+        btnFull.classList.toggle('text-dark', isFull);
+        btnFull.classList.toggle('btn-outline-light', !isFull);
+
+        btnSummary.classList.toggle('btn-light', !isFull);
+        btnSummary.classList.toggle('text-dark', !isFull);
+        btnSummary.classList.toggle('btn-outline-light', isFull);
+
+        if (indicator) {
+            indicator.textContent = `当前模式：${isFull ? '全量' : '摘要'}`;
+        }
+    }
+
+    function setReportModeButtonsEnabled(enabled) {
+        const btnFull = document.getElementById('btn-request-full');
+        const btnSummary = document.getElementById('btn-request-summary');
+        if (btnFull) btnFull.disabled = !enabled;
+        if (btnSummary) btnSummary.disabled = !enabled;
+    }
+
+    function applyReportModeForNode(nodeId) {
+        if (!nodeId) {
+            currentReportMode = 'summary';
+            setReportModeButtonState(currentReportMode);
+            setReportModeButtonsEnabled(false);
+            return;
+        }
+        currentReportMode = reportModeByNode[nodeId] || 'summary';
+        setReportModeButtonState(currentReportMode);
+        setReportModeButtonsEnabled(true);
+    }
+
+    async function requestReportMode(mode) {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先选择一个边缘节点', 'warning');
+            }
+            return;
+        }
+        const targetMode = (mode || '').toLowerCase();
+        if (!['summary', 'full'].includes(targetMode)) return;
+        if (currentReportMode === targetMode) return;
+
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/report_mode', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ node_id: currentNodeId, mode: targetMode })
+            });
+
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                throw new Error(`HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            if (!data.success) {
+                throw new Error(data.error || '请求失败');
+            }
+
+            const newMode = data.report_mode || targetMode;
+            reportModeByNode[currentNodeId] = newMode;
+            applyReportModeForNode(currentNodeId);
+            if (typeof window.showToast === 'function') {
+                const msg = newMode === 'full' ? '已请求全量数据' : '已关闭全量请求';
+                window.showToast(msg, 'success');
+            }
+        } catch (e) {
+            console.error('[requestReportMode] 失败:', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast('请求失败，请稍后重试', 'error');
+            }
+        }
+    }
     // 故障日志：是否已从后端回填历史记录（避免“长期空白”）
     let faultLogHistoryLoaded = false;
     // 故障日志：统一维护一份“可排序的列表”，避免直接 DOM insert 导致顺序不可控
@@ -529,6 +638,18 @@
         
         // 初始化边缘节点列表
         renderNodeList();
+
+        // 绑定上报请求按钮
+        const btnFull = document.getElementById('btn-request-full');
+        const btnSummary = document.getElementById('btn-request-summary');
+        if (btnFull) {
+            btnFull.addEventListener('click', () => requestReportMode('full'));
+        }
+        if (btnSummary) {
+            btnSummary.addEventListener('click', () => requestReportMode('summary'));
+        }
+        setReportModeButtonState('summary');
+        setReportModeButtonsEnabled(false);
 
         // 处理URL参数（全局搜索跳转）
         handleURLParams();
@@ -791,8 +912,10 @@
                 newConfigs[nodeId] = {
                     status: node.status || "online",
                     fault_code: node.fault_code || "E00",  // 保存故障代码
-                    channels: channels
+                    channels: channels,
+                    report_mode: (node.report_mode || 'summary').toLowerCase()
                 };
+                reportModeByNode[nodeId] = newConfigs[nodeId].report_mode;
             });
             
             // 检查配置是否发生变化
@@ -871,6 +994,8 @@
                     }
                 }
             }
+
+            applyReportModeForNode(currentNodeId);
             
             // 辅助函数：获取故障类型名称
             function getFaultTypeName(faultCode) {
@@ -1343,6 +1468,9 @@
         
         // 更新图表
         updateCharts();
+
+        // 更新上报请求按钮状态
+        applyReportModeForNode(currentNodeId);
         
         // 更新性能监控面板
         if (typeof window.updatePerfPanel === 'function') {
@@ -1818,12 +1946,17 @@
                     if (NODE_CONFIGS[node.node_id]) {
                         NODE_CONFIGS[node.node_id].status = node.status;
                         NODE_CONFIGS[node.node_id].fault_code = node.fault_code;
+                        if (node.report_mode) {
+                            NODE_CONFIGS[node.node_id].report_mode = String(node.report_mode).toLowerCase();
+                            reportModeByNode[node.node_id] = NODE_CONFIGS[node.node_id].report_mode;
+                        }
                     }
                     // 关键修复：初始化故障历史记录，避免误触发弹窗
                     nodeFaultHistory[node.node_id] = node.fault_code || 'E00';
                 });
                 // 一次性重新渲染节点列表
                 renderNodeList();
+                applyReportModeForNode(currentNodeId);
             }
         });
         
@@ -1844,12 +1977,23 @@
                     location: '',
                     status: msg.status || 'online',
                     fault_code: msg.fault_code || 'E00',
-                    channels: []
+                    channels: [],
+                    report_mode: (msg.report_mode || 'summary').toLowerCase()
                 };
                 renderNodeList();
             } else {
                 NODE_CONFIGS[nodeId].status = msg.status;
                 NODE_CONFIGS[nodeId].fault_code = msg.fault_code;
+                if (msg.report_mode) {
+                    NODE_CONFIGS[nodeId].report_mode = String(msg.report_mode).toLowerCase();
+                }
+            }
+
+            if (msg.report_mode) {
+                reportModeByNode[nodeId] = String(msg.report_mode).toLowerCase();
+                if (currentNodeId === nodeId) {
+                    applyReportModeForNode(nodeId);
+                }
             }
             
             // ========== 系统故障日志（全局）：对所有节点的故障码变化进行记录 ==========

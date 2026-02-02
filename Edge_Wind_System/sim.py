@@ -1547,6 +1547,7 @@ def background_heartbeat_loop():
             # 遍历所有节点配置，发送心跳（快速发送，不阻塞）
             for node_config in nodes_to_process:
                 try:
+                    report_mode = (node_config.get("report_mode") or "summary").lower()
                     # 为每个节点使用独立的时间偏移，让波形变化更明显
                     node_time_offset = time_offset + hash(node_config["node_id"]) % 100 * 0.001
                     
@@ -1571,8 +1572,12 @@ def background_heartbeat_loop():
                         
                         # 将数据添加到通道配置中（确保所有必需字段都存在）
                         channel_copy["value"] = current_value
-                        channel_copy["waveform"] = waveform if isinstance(waveform, list) else []  # 1024个采样点
-                        channel_copy["fft_spectrum"] = fft_spectrum if isinstance(fft_spectrum, list) else []  # FFT频谱
+                        if report_mode == "full":
+                            channel_copy["waveform"] = waveform if isinstance(waveform, list) else []  # 1024个采样点
+                            channel_copy["fft_spectrum"] = fft_spectrum if isinstance(fft_spectrum, list) else []  # FFT频谱
+                        else:
+                            channel_copy["waveform"] = []
+                            channel_copy["fft_spectrum"] = []
                         
                         # 确保必需字段存在
                         if "label" not in channel_copy:
@@ -1671,6 +1676,16 @@ def background_heartbeat_loop():
                                     
                                     print(f"[远程命令] ✅ 节点 {node_id} 已重置为在线状态（物理状态已恢复）")
                                     print(f"       心跳状态已同步: online (故障代码: E00)")
+
+                            report_mode = resp_data.get('report_mode')
+                            if report_mode:
+                                report_mode = str(report_mode).lower()
+                                if report_mode in ('summary', 'full'):
+                                    with CONFIG_LOCK:
+                                        for idx, nc in enumerate(NODES_CONFIG):
+                                            if nc['node_id'] == node_config['node_id']:
+                                                NODES_CONFIG[idx]['report_mode'] = report_mode
+                                                break
                         except (ValueError, KeyError) as e:
                             # JSON解析错误或缺少字段，忽略
                             pass

@@ -44,7 +44,8 @@ def init_socket_events(socketio, nodes):
                     'node_id': node_id,
                     'status': node_data.get('status', 'online'),
                     'fault_code': node_data.get('fault_code', 'E00'),
-                    'timestamp': node_data['timestamp']
+                    'timestamp': node_data['timestamp'],
+                    'report_mode': (node_data.get('data', {}) or {}).get('report_mode')
                 })
         
         emit('node_status_list', {'nodes': node_status_list})
@@ -109,4 +110,3 @@ def init_socket_events(socketio, nodes):
         if sid in client_subscriptions and node_id in client_subscriptions[sid]:
             client_subscriptions[sid].remove(node_id)
             logger.info(f"📡 客户端 {sid} 取消订阅节点: {node_id}")
-

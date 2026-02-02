@@ -182,6 +182,7 @@ bool ESP_Config_LoadFromSD_UIFiles(void);
     void ESP_Init(void);                // 初始化 ESP8266 (AT指令序列)
     void ESP_Update_Data_And_FFT(void); // 更新模拟数据并计算 FFT
     void ESP_Post_Data(void);           // 打包 JSON 并通过 HTTP POST 发送
+    void ESP_Post_Summary(void);        // 发送轻量数据（无波形/FFT）
     void ESP_Post_Heartbeat(void);      // 发送最小心跳包（保活）
     void ESP_Register(void);            // 向服务器注册节点信息
     void ESP_Console_Init(void);        // 初始化调试控制台中断
@@ -210,6 +211,7 @@ bool ESP_Config_LoadFromSD_UIFiles(void);
     bool ESP_UI_SendCmd(esp_ui_cmd_t cmd);      // UI 线程调用（不阻塞）
     void ESP_UI_TaskPoll(void);                 // 在 ESP8266_Task 循环里调用（处理UI命令）
     bool ESP_UI_IsReporting(void);              // 查询当前是否在上报状态
+    bool ESP_ServerReportFull(void);            // 查询服务器是否请求全量
     bool ESP_UI_IsWiFiOk(void);                 // 查询 WiFi 步骤是否已成功
     bool ESP_UI_IsTcpOk(void);                  // 查询 TCP 步骤是否已成功
     bool ESP_UI_IsRegOk(void);                  // 查询 REG 步骤是否已成功

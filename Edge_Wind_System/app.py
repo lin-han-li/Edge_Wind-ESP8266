@@ -265,6 +265,7 @@ def load_user(user_id):
 # ==================== 全局变量（节点管理） ====================
 active_nodes = {}
 node_commands = {}
+node_report_modes = {}
 # 默认 60s，可用 EDGEWIND_NODE_TIMEOUT_SEC 调整（与 api.py / socket_events.py 保持一致）
 NODE_TIMEOUT = max(10, int(os.environ.get("EDGEWIND_NODE_TIMEOUT_SEC", "60") or "60"))
 
@@ -277,7 +278,7 @@ from edgewind.routes.pages import pages_bp
 from edgewind.routes.api import api_bp, init_api_blueprint, register_device, upload_data, node_heartbeat, delete_node_history
 
 # 初始化API蓝图
-init_api_blueprint(app, socketio, db_executor, active_nodes, node_commands)
+init_api_blueprint(app, socketio, db_executor, active_nodes, node_commands, node_report_modes)
 
 # 注册蓝图
 app.register_blueprint(auth_bp)

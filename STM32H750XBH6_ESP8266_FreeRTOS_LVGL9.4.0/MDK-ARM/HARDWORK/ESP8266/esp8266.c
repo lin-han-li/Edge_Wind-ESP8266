@@ -287,6 +287,7 @@ static void StrTrimInPlace(char *s);
 static void ESP_StreamRx_Start(void);
 static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len);
 void ESP_UI_Internal_OnLog(const char *line);
+static void ESP_SetServerReportMode(uint8_t full);
 
 // “核武器”：强制停止 USART2 的 RX DMA/中断状态机，切换到 AT(阻塞收发)前必须调用
 static void ESP_ForceStop_DMA(void);
@@ -304,6 +305,9 @@ static volatile uint8_t g_console_line_len = 0;
 // ---------- 服务器下发命令解析 ----------
 // 当从 USART2 收到的 HTTP 响应中提取到 "reset" 时置 1
 static volatile uint8_t g_server_reset_pending = 0;
+// 服务器请求的上报模式：0=summary, 1=full
+static volatile uint8_t g_server_report_full = 0;
+static volatile uint8_t g_server_report_full_dirty = 0;
 // 当检测到链路异常关键字（CLOSED/ERROR）时置 1，主循环触发软重连
 static volatile uint8_t g_link_reconnect_pending = 0;
 
@@ -1262,6 +1266,16 @@ static void ESP_Console_HandleLine(char *line)
     ESP_Log("[控制台] 未识别命令: %s（输入 help 查看帮助）\r\n", line);
 }
 
+static void ESP_SetServerReportMode(uint8_t full)
+{
+    full = (full != 0U) ? 1U : 0U;
+    if (g_server_report_full != full)
+    {
+        g_server_report_full = full;
+        g_server_report_full_dirty = 1U;
+    }
+}
+
 void ESP_Console_Init(void)
 {
 #if (ESP_CONSOLE_ENABLE)
@@ -1298,6 +1312,20 @@ void ESP_Console_Poll(void)
         g_server_reset_pending = 0;
         ESP_Log("[服务器命令] 收到 reset：清除故障码 -> E00\r\n");
         ESP_SetFaultCode("E00");
+    }
+
+    // 2.0) 处理“服务器下发 report_mode”指令
+    if (g_server_report_full_dirty)
+    {
+        g_server_report_full_dirty = 0;
+        if (g_server_report_full)
+        {
+            ESP_Log("[服务器命令] report_mode=full：请求全量上报\r\n");
+        }
+        else
+        {
+            ESP_Log("[服务器命令] report_mode=summary：关闭全量上报\r\n");
+        }
     }
 
     // 2.1) 链路异常：尽快软重连，避免长时间“卡住”
@@ -1396,6 +1424,193 @@ void ESP_Console_Poll(void)
             last_frames = frames;
             last_miss = miss;
         }
+    }
+#endif
+}
+
+/**
+ * @brief  数据发送主函数
+ * @note   负责打包 JSON，通过 DMA 发送
+ */
+void ESP_Post_Summary(void)
+{
+    if (g_esp_ready == 0)
+        return;
+
+    /* 发送节流统计 */
+    static uint32_t last_send_time = 0;
+    static uint32_t tx_try = 0, tx_ok = 0, tx_busy = 0, tx_err = 0;
+    static uint32_t last_tx_log = 0;
+
+    uint32_t now_tick = HAL_GetTick();
+
+    /* 如果正在分段发送，优先推进下一段 */
+    if (g_tx_chunk.active) {
+        if (now_tick < g_tx_chunk.next_tick) {
+            return;
+        }
+        HAL_UART_StateTypeDef st_uart = HAL_UART_GetState(&huart2);
+        if (st_uart == HAL_UART_STATE_BUSY_TX || st_uart == HAL_UART_STATE_BUSY_TX_RX) {
+            return;
+        }
+        goto send_next_chunk;
+    }
+
+    /* 非分段 DMA 链发送期间，禁止再次进入发送流程 */
+    if (g_http_tx_phase != ESP_HTTP_TX_IDLE) {
+        return;
+    }
+
+    /* HTTP 门控：发送后等待回包，避免连续请求淹没服务器；超时后自动放行。 */
+    if (g_waiting_http_response)
+    {
+        uint32_t now_gate = HAL_GetTick();
+        uint32_t to_ms = ESP_CommParams_HttpTimeoutMs();
+        if ((now_gate - g_waiting_http_tick) < to_ms)
+            return;
+        g_waiting_http_response = 0;
+    }
+
+    // 发送频率限制
+    uint32_t min_itv = ESP_CommParams_MinIntervalMs();
+    if (min_itv && (now_tick - last_send_time < min_itv))
+        return;
+
+    ensure_http_packet_buf();
+    const uint32_t header_reserve_len = 256;
+    char *body = (char *)http_packet_buf + header_reserve_len;
+    char *p = body;
+    const char *end = (const char *)http_packet_buf + HTTP_PACKET_BUF_SIZE;
+    uint32_t body_len = 0;
+    int header_len = 0;
+    uint32_t total_len = 0;
+    static uint32_t s_seq = 0;
+    uint32_t seq = ++s_seq;
+
+    // JSON Header
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"channels\":[",
+                     g_sys_cfg.node_id, g_fault_code, (unsigned long)seq))
+        return;
+
+    for (int i = 0; i < 4; i++)
+    {
+        int32_t cv_i = ESP_FloatToI32Scaled(node_channels[i].current_value);
+        if (!ESP_Appendf(&p, end,
+                         "{"
+                         "\"id\":%d,\"channel_id\":%d,"
+                         "\"label\":\"%s\",\"name\":\"%s\","
+                         "\"value\":%ld,\"current_value\":%ld,"
+                         "\"unit\":\"%s\"}"
+                         ,
+                         node_channels[i].id, node_channels[i].id,
+                         node_channels[i].label, node_channels[i].label,
+                         (long)cv_i, (long)cv_i,
+                         node_channels[i].unit))
+            return;
+        if (i < 3)
+        {
+            if (!ESP_Appendf(&p, end, ","))
+                return;
+        }
+    }
+
+    if (!ESP_Appendf(&p, end, "]}"))
+        return;
+
+    body_len = (uint32_t)(p - body);
+    if (body_len == 0 || body_len > (HTTP_PACKET_BUF_SIZE - header_reserve_len - 64u))
+        return;
+
+    header_len = snprintf((char *)http_packet_buf, header_reserve_len,
+                          "POST /api/node/heartbeat HTTP/1.1\r\n"
+                          "Host: %s:%d\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: %lu\r\n"
+                          "\r\n",
+                          g_sys_cfg.server_ip, g_sys_cfg.server_port, (unsigned long)body_len);
+    if (header_len <= 0 || (uint32_t)header_len >= header_reserve_len)
+        return;
+
+    uint32_t total_len_check = (uint32_t)header_len + body_len;
+    if (ESP_CommParams_ChunkKb() == 0u && total_len_check <= 65535u)
+    {
+        DCache_CleanByAddr_Any(http_packet_buf, (uint32_t)header_len);
+        DCache_CleanByAddr_Any(body, body_len);
+        HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2, (uint8_t *)http_packet_buf, (uint16_t)header_len);
+        tx_try++;
+        if (st == HAL_OK) {
+            tx_ok++;
+            g_http_tx_body_ptr = (uint8_t *)body;
+            g_http_tx_body_len = body_len;
+            g_http_tx_phase = ESP_HTTP_TX_HEADER_INFLIGHT;
+            last_send_time = now_tick;
+        } else if (st == HAL_BUSY) {
+            tx_busy++;
+        } else {
+            tx_err++;
+        }
+        return;
+    }
+
+    memmove(http_packet_buf + header_len, body, body_len);
+    total_len = (uint32_t)header_len + body_len;
+    if (total_len > HTTP_PACKET_BUF_SIZE)
+        return;
+    DCache_CleanByAddr_Any(http_packet_buf, total_len);
+
+    g_tx_chunk.total_len = total_len;
+    g_tx_chunk.offset = 0;
+    g_tx_chunk.next_tick = 0;
+    g_tx_chunk.active = 1;
+    now_tick = HAL_GetTick();
+
+send_next_chunk:
+    if (!g_tx_chunk.active) {
+        return;
+    }
+    uint32_t chunk_bytes = ESP_CommParams_ChunkKb() * 1024u;
+    if (chunk_bytes == 0u) chunk_bytes = 65535u;
+    uint32_t remain = g_tx_chunk.total_len - g_tx_chunk.offset;
+    if (remain == 0u) {
+        g_tx_chunk.active = 0;
+        return;
+    }
+    if (chunk_bytes > remain) chunk_bytes = remain;
+    if (chunk_bytes > 65535u) chunk_bytes = 65535u;
+
+    HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(&huart2,
+                                                 (uint8_t *)http_packet_buf + g_tx_chunk.offset,
+                                                 (uint16_t)chunk_bytes);
+    tx_try++;
+    if (st == HAL_OK) {
+        tx_ok++;
+        g_tx_chunk.offset += chunk_bytes;
+        g_tx_chunk.next_tick = now_tick + ESP_CommParams_ChunkDelayMs();
+        if (g_tx_chunk.offset >= g_tx_chunk.total_len) {
+            g_tx_chunk.active = 0;
+            last_send_time = now_tick;
+            g_last_heartbeat_tick = now_tick;
+            g_waiting_http_response = 1;
+            g_waiting_http_tick = now_tick;
+        }
+    } else if (st == HAL_BUSY) {
+        tx_busy++;
+    } else {
+        tx_err++;
+    }
+
+#if (ESP_DEBUG)
+    uint32_t now = HAL_GetTick();
+    if ((now - last_tx_log) >= 1000)
+    {
+        last_tx_log = now;
+        ESP_Log("[调试] Summary TX: try=%lu ok=%lu busy=%lu err=%lu total=%lu off=%lu chunk=%lu gState=%d rxStarted=%d\r\n",
+                (unsigned long)tx_try, (unsigned long)tx_ok, (unsigned long)tx_busy, (unsigned long)tx_err,
+                (unsigned long)g_tx_chunk.total_len,
+                (unsigned long)g_tx_chunk.offset,
+                (unsigned long)chunk_bytes,
+                (int)huart2.gState,
+                (int)g_usart2_rx_started);
     }
 #endif
 }
@@ -1800,6 +2015,14 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
     {
         g_server_reset_pending = 1;
     }
+    if (ESP_BufContains(data, len, "\"report_mode\"") && ESP_BufContains(data, len, "full"))
+    {
+        ESP_SetServerReportMode(1);
+    }
+    if (ESP_BufContains(data, len, "\"report_mode\"") && ESP_BufContains(data, len, "summary"))
+    {
+        ESP_SetServerReportMode(0);
+    }
     // 3) 链路异常检测：尽早触发软重连，避免长时间“卡住”
     if (g_report_enabled && !g_link_reconnecting &&
         (ESP_BufContains(data, len, "CLOSED") ||
@@ -1848,6 +2071,14 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
     if (strstr(g_stream_window, "\"command\"") && strstr(g_stream_window, "reset"))
     {
         g_server_reset_pending = 1;
+    }
+    if (strstr(g_stream_window, "\"report_mode\"") && strstr(g_stream_window, "full"))
+    {
+        ESP_SetServerReportMode(1);
+    }
+    if (strstr(g_stream_window, "\"report_mode\"") && strstr(g_stream_window, "summary"))
+    {
+        ESP_SetServerReportMode(0);
     }
     // 滑动窗口中检测链路异常关键字
     if (!g_link_reconnecting &&
@@ -2607,6 +2838,11 @@ bool ESP_UI_SendCmd(esp_ui_cmd_t cmd)
 bool ESP_UI_IsReporting(void)
 {
     return (g_report_enabled != 0U);
+}
+
+bool ESP_ServerReportFull(void)
+{
+    return (g_server_report_full != 0U);
 }
 
 bool ESP_UI_IsWiFiOk(void)

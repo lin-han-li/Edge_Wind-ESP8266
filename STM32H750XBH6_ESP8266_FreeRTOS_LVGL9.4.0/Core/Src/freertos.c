@@ -562,7 +562,11 @@ void ESP8266_Task(void *argument)
     if (ESP_UI_IsReporting())
     {
       ESP_Update_Data_And_FFT();
-      ESP_Post_Data();
+      if (ESP_ServerReportFull()) {
+        ESP_Post_Data();
+      } else {
+        ESP_Post_Summary();
+      }
     }
     osDelay(5);  /* 从1ms改为5ms，减少任务切换频率，降低CPU占用 */
   }
@@ -573,4 +577,3 @@ void ESP8266_Task(void *argument)
 /* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
-

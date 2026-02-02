@@ -1,7 +1,16 @@
-#define AppName "EdgeWind Admin"
+#define AppName "EdgeWind 管理端"
 #define AppVersion "1.0.0"
 #define AppPublisher "EdgeWind Team"
 #define AppCompany "EdgeWind"
+
+#define LocalLangFile SourcePath + "Languages\\ChineseSimplified.isl"
+#if FileExists(LocalLangFile)
+#define LangName "chinesesimplified"
+#define LangFile LocalLangFile
+#else
+#define LangName "english"
+#define LangFile "compiler:Default.isl"
+#endif
 
 ; Allow overriding dist folder from command line:
 ;   ISCC /DDistDir="D:\Edge_Wind\Admin\dist" installer.iss
@@ -13,9 +22,11 @@
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={pf}\{#AppName}
+DefaultDirName={autopf}\{#AppName}
 PrivilegesRequired=lowest
 DefaultGroupName={#AppName}
+DisableDirPage=no
+WizardStyle=modern
 OutputDir=installer
 OutputBaseFilename=EdgeWind_Admin_Setup
 Compression=lzma
@@ -30,19 +41,22 @@ VersionInfoProductName={#AppName}
 SetupIconFile={#SetupIcon}
 #endif
 
+[Languages]
+Name: "{#LangName}"; MessagesFile: "{#LangFile}"
+
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop icon"; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"; Flags: unchecked
 
 [Files]
 Source: "{#DistDir}\EdgeWind_Admin.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\EdgeWind Admin"; Filename: "{app}\EdgeWind_Admin.exe"
-Name: "{userdesktop}\EdgeWind Admin"; Filename: "{app}\EdgeWind_Admin.exe"; Tasks: desktopicon; Check: not IsAdminLoggedOn
-Name: "{commondesktop}\EdgeWind Admin"; Filename: "{app}\EdgeWind_Admin.exe"; Tasks: desktopicon; Check: IsAdminLoggedOn
+Name: "{group}\EdgeWind 管理端"; Filename: "{app}\EdgeWind_Admin.exe"
+Name: "{userdesktop}\EdgeWind 管理端"; Filename: "{app}\EdgeWind_Admin.exe"; Tasks: desktopicon; Check: not IsAdmin
+Name: "{commondesktop}\EdgeWind 管理端"; Filename: "{app}\EdgeWind_Admin.exe"; Tasks: desktopicon; Check: IsAdmin
 
 [Run]
-Filename: "{app}\EdgeWind_Admin.exe"; Description: "Launch EdgeWind Admin"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\EdgeWind_Admin.exe"; Description: "运行 EdgeWind 管理端"; Flags: nowait postinstall skipifsilent
 
 [Code]
 const
@@ -170,7 +184,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    if not IsAdminLoggedOn then
+    if not IsAdmin then
     begin
       MsgBox('提示：当前未使用管理员权限安装。' + #13#10 +
              '如需局域网设备访问，请右键以管理员身份运行一次 EdgeWind Admin，' +

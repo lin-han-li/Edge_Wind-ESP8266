@@ -3,6 +3,15 @@
 #define AppPublisher "EdgeWind Team"
 #define AppCompany "EdgeWind"
 
+#define LocalLangFile SourcePath + "Languages\\ChineseSimplified.isl"
+#if FileExists(LocalLangFile)
+#define LangName "chinesesimplified"
+#define LangFile LocalLangFile
+#else
+#define LangName "english"
+#define LangFile "compiler:Default.isl"
+#endif
+
 ; Allow overriding dist folder from command line:
 ;   ISCC /DDistDir="D:\Edge_Wind\Client\dist" installer_client.iss
 #ifndef DistDir
@@ -13,7 +22,7 @@
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={pf}\{#AppName}
+DefaultDirName={autopf}\{#AppName}
 PrivilegesRequired=lowest
 DefaultGroupName={#AppName}
 OutputDir=installer
@@ -30,6 +39,9 @@ VersionInfoProductName={#AppName}
 SetupIconFile={#SetupIcon}
 #endif
 
+[Languages]
+Name: "{#LangName}"; MessagesFile: "{#LangFile}"
+
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop icon"; Flags: unchecked
 
@@ -39,8 +51,8 @@ Source: "edgewind_client.env"; DestDir: "{userappdata}\EdgeWind_Client"; Flags: 
 
 [Icons]
 Name: "{group}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"
-Name: "{userdesktop}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"; Tasks: desktopicon; Check: not IsAdminLoggedOn
-Name: "{commondesktop}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"; Tasks: desktopicon; Check: IsAdminLoggedOn
+Name: "{userdesktop}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"; Tasks: desktopicon; Check: not IsAdmin
+Name: "{commondesktop}\EdgeWind Client"; Filename: "{app}\EdgeWind_Client.exe"; Tasks: desktopicon; Check: IsAdmin
 
 [Run]
 Filename: "{app}\EdgeWind_Client.exe"; Description: "Launch EdgeWind Client"; Flags: nowait postinstall skipifsilent

@@ -364,7 +364,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         ADSA_B[ch][number] = ADS131A04_Buf[ch];
       }
       number++;
-      if (number == 1024)
+      if (number == AD_ACQ_POINTS)
       {
         ADS131A04_flag = 1;
         ADS131A04_flag2 = 0;
@@ -379,7 +379,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         ADSA_B2[ch][number2] = ADS131A04_Buf[ch];
       }
       number2++;
-      if (number2 == 1024)
+      if (number2 == AD_ACQ_POINTS)
       {
         ADS131A04_flag2 = 2;
         ADS131A04_flag = 0;

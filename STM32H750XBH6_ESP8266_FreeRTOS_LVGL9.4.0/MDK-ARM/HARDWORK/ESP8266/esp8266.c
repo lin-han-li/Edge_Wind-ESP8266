@@ -165,9 +165,16 @@ static void DCache_InvalidateByAddr_Any(void *addr, uint32_t len)
 
 /* ================= 内存分配 ================= */
 
-/* ⚠️ 发送缓冲区扩大到 48KB，用于存放巨大的 JSON 字符串（包含波形数组）。
- * 必须放在 AXI SRAM 并对齐，否则 DMA 发送会出错或导致 HardFault。 */
-static uint8_t http_packet_buf[49152] AXI_SRAM_SECTION DMA_ALIGN32;
+/* 发送缓冲区：512KB 放 SDRAM（LVGL 池之后 0xC0600000），支持 4 通道全量上传（4096 波形 + 1024 FFT/通道，step=1），且不占 AXI 避免 UI 卡死。 */
+#define HTTP_PACKET_BUF_SIZE      (524288u)
+#define HTTP_PACKET_BUF_SDRAM_ADDR ((uint8_t *)0xC0600000)
+static uint8_t *http_packet_buf;
+
+static void ensure_http_packet_buf(void)
+{
+    if (http_packet_buf == NULL)
+        http_packet_buf = HTTP_PACKET_BUF_SDRAM_ADDR;
+}
 
 /* 简单的接收缓冲，用于 AT 指令阻塞接收 (AT模式下数据量小，且使用轮询，不需要DMA) */
 static uint8_t esp_rx_buf[512];
@@ -179,8 +186,9 @@ static inline uint8_t ESP_RxBusyDetected(void)
            (strstr((char *)esp_rx_buf, "BUSY") != NULL);
 }
 
-/* 4 个通道的传感器数据结构体实例，用于存储电压、电流、FFT结果等 */
-Channel_Data_t node_channels[4];
+/* 4 个通道的传感器数据结构体实例，用于存储电压、电流、FFT结果等
+ * 4096 点波形 + 2048 点 FFT 时该结构体较大，放 AXI SRAM 避免 DTCM 溢出导致卡死。 */
+Channel_Data_t node_channels[4] AXI_SRAM_SECTION;
 volatile uint8_t g_esp_ready = 0; // 全局标志：1 表示 WiFi/TCP 就绪，可以发送
 /* UI“开始/停止上报”开关：用于门控后台自动重连等行为 */
 static volatile uint8_t g_report_enabled = 0;
@@ -221,9 +229,9 @@ void ESP_Config_Apply(const SystemConfig_t *cfg)
 /* DSP 相关变量：用于 FFT 计算 */
 static arm_rfft_fast_instance_f32 S;
 static uint8_t fft_initialized = 0;
-static float32_t fft_input_buf[WAVEFORM_POINTS];  // FFT 输入缓冲（避免破坏原波形）
-static float32_t fft_output_buf[WAVEFORM_POINTS]; // FFT 输出复数数组
-static float32_t fft_mag_buf[WAVEFORM_POINTS];    // FFT 幅值数组
+static float32_t fft_input_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;  // FFT 输入缓冲（避免破坏原波形）
+static float32_t fft_output_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION; // FFT 输出复数数组
+static float32_t fft_mag_buf[WAVEFORM_POINTS] AXI_SRAM_SECTION;    // FFT 幅值数组
 
 /* UI 模式/非 ESP_Init 路径也必须初始化通道元数据，否则后端会把 4 个通道都当成 id=0 覆盖成“一个通道” */
 static void ESP_Init_Channels_And_DSP(void)
@@ -1141,6 +1149,9 @@ void ESP_Update_Data_And_FFT(void)
         sum1 += (double)v1;
         sum2 += (double)v2;
         sum3 += (double)v3;
+        /* 每 1024 点让出 CPU，避免长时间占用导致 UI 卡死（4096 点波形） */
+        if ((i + 1) % 1024 == 0)
+            osDelay(0);
     }
 
     node_channels[0].current_value = ESP_SafeFloat((float)(sum0 / (double)WAVEFORM_POINTS));
@@ -1158,6 +1169,8 @@ void ESP_Update_Data_And_FFT(void)
         {
             node_channels[ch].fft_data[i] = (fft_mag_buf[i] / (float)(WAVEFORM_POINTS / 2)) * 2.0f;
         }
+        /* 每通道 FFT 完成后让出 CPU，避免 4 通道连续计算导致 UI 卡死 */
+        osDelay(0);
     }
 
     last_ready = ready;
@@ -1435,11 +1448,12 @@ void ESP_Post_Data(void)
     if (min_itv && (now_tick - last_send_time < min_itv))
         return;
 
+    ensure_http_packet_buf();
     /* 开始构建 JSON：把 body 放到偏移处，避免对大 body 做 memmove */
     const uint32_t header_reserve_len = 256;
     char *body = (char *)http_packet_buf + header_reserve_len;
     char *p = body;
-    const char *end = (const char *)http_packet_buf + sizeof(http_packet_buf);
+    const char *end = (const char *)http_packet_buf + HTTP_PACKET_BUF_SIZE;
     uint32_t body_len = 0;
     int header_len = 0;
     uint32_t total_len = 0;
@@ -1493,7 +1507,7 @@ void ESP_Post_Data(void)
         return;
 
     body_len = (uint32_t)(p - body);
-    if (body_len == 0 || body_len > (sizeof(http_packet_buf) - header_reserve_len - 64u))
+    if (body_len == 0 || body_len > (HTTP_PACKET_BUF_SIZE - header_reserve_len - 64u))
     {
         // 保护：长度异常直接丢弃，避免 memmove 越界导致后续随机坏帧
         return;
@@ -1510,8 +1524,9 @@ void ESP_Post_Data(void)
     if (header_len <= 0 || (uint32_t)header_len >= header_reserve_len)
         return;
 
-    /* 关闭分段：header DMA + body DMA（避免 memmove 大包） */
-    if (ESP_CommParams_ChunkKb() == 0u)
+    /* 非分段仅当整包 ≤ 64KB 时可用：HAL_UART_Transmit_DMA 长度为 uint16_t，超过 65535 会截断导致服务器收不全。 */
+    uint32_t total_len_check = (uint32_t)header_len + body_len;
+    if (ESP_CommParams_ChunkKb() == 0u && total_len_check <= 65535u)
     {
         DCache_CleanByAddr_Any(http_packet_buf, (uint32_t)header_len);
         DCache_CleanByAddr_Any(body, body_len);
@@ -1534,7 +1549,7 @@ void ESP_Post_Data(void)
     /* 分段发送：需要把 header+body 变成连续缓冲（仍会 memmove 一次大包） */
     memmove(http_packet_buf + header_len, body, body_len);
     total_len = (uint32_t)header_len + body_len;
-    if (total_len > sizeof(http_packet_buf))
+    if (total_len > HTTP_PACKET_BUF_SIZE)
         return;
     DCache_CleanByAddr_Any(http_packet_buf, total_len);
 
@@ -1549,8 +1564,9 @@ send_next_chunk:
     if (!g_tx_chunk.active) {
         return;
     }
+    /* 每段 ≤ 65535（DMA 长度 uint16_t）；chunk_kb=0 时仅在全量包>64KB 会走分段，用 64KB 作为默认段大小 */
     uint32_t chunk_bytes = ESP_CommParams_ChunkKb() * 1024u;
-    if (chunk_bytes == 0u) chunk_bytes = 1024u;
+    if (chunk_bytes == 0u) chunk_bytes = 65535u;
     uint32_t remain = g_tx_chunk.total_len - g_tx_chunk.offset;
     if (remain == 0u) {
         g_tx_chunk.active = 0;
@@ -1983,6 +1999,7 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 
 void ESP_Register(void)
 {
+    ensure_http_packet_buf();
     char *body_start = (char *)http_packet_buf + 256;
     ESP_Log("[ESP] 正在注册设备...\r\n");
     sprintf(body_start, "{\"device_id\":\"%s\",\"location\":\"%s\",\"hw_version\":\"v1.0_4CH\"}", g_sys_cfg.node_id, g_sys_cfg.node_location);
@@ -2102,6 +2119,7 @@ static uint8_t ESP_TryReuseTransparent(void)
     (void)HAL_UART_AbortReceive(&huart2);
     ESP_Uart2_Drain(100);
 
+    ensure_http_packet_buf();
     char *body = (char *)http_packet_buf + 256;
     sprintf(body, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\"}", g_sys_cfg.node_id, g_fault_code);
     uint32_t body_len = (uint32_t)strlen(body);

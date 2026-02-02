@@ -87,6 +87,13 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 #define USE_AD7606 1
+
+/* 采样点数（双缓冲采集长度）：4096 点（降低以减轻 FFT/UI 负载，缓解卡顿） */
+#define AD_ACQ_POINTS 4096
+
+/* AD7606 过采样模式：
+ * 25.6kHz 下必须使用 OS=0（无过采样）才能避免 BUSY 过长导致 miss≈frames、UI卡顿。 */
+#define AD7606_OS_MODE 0u
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

@@ -406,14 +406,14 @@
           <GroupName>Application/User/Core</GroupName>
           <Files>
             <File>
-              <FileName>main.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>../Core/Src/main.c</FilePath>
-            </File>
-            <File>
               <FileName>ad_acq_buffers.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/ad_acq_buffers.c</FilePath>
+            </File>
+            <File>
+              <FileName>main.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/main.c</FilePath>
             </File>
             <File>
               <FileName>gpio.c</FileName>

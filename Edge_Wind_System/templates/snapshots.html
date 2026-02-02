@@ -49,6 +49,26 @@
         padding: 1rem;
         background: #f8f9fa;
     }
+
+    /* 故障快照详情弹窗：对齐“故障管理-诊断弹窗”的尺寸/布局 */
+    #snapshotDetailModal .modal-dialog {
+        max-width: 60% !important;
+        width: 60% !important;
+        max-height: 78.4vh;
+        margin: 1vh auto;
+    }
+
+    #snapshotDetailModal .modal-content {
+        height: 78.4vh !important;
+        max-height: 78.4vh !important;
+        display: flex;
+        flex-direction: column;
+    }
+
+    #snapshotDetailModal .modal-body {
+        flex: 1;
+        overflow-y: auto;
+    }
     
     .snapshot-type-label {
         font-weight: bold;
@@ -83,6 +103,13 @@
         height: 350px;
         margin-top: 1rem;
         min-height: 300px;
+    }
+
+    /* 详情弹窗内图表：固定更高高度 */
+    #snapshotDetailModal .chart-row .chart-container {
+        height: 47vh;
+        min-height: 340px;
+        margin-top: 0.75rem;
     }
     
     .channel-tabs {
@@ -250,7 +277,7 @@
                 <h5 class="modal-title">故障快照详情</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body" id="snapshotDetailContent" style="max-height: 80vh; overflow-y: auto;">
+            <div class="modal-body" id="snapshotDetailContent">
                 <!-- 动态加载内容 -->
             </div>
         </div>
@@ -281,6 +308,14 @@
         'before_recovery': '恢复前',
         'after_recovery': '恢复后'
     };
+
+    // ========== 采样参数（与下位机对齐）==========
+    // 下位机：4096 点 @ 25.6kHz；上传 FFT：2048 点
+    const EDGEWIND_SAMPLE_RATE_HZ = 25600;
+    const EDGEWIND_WAVEFORM_POINTS = 4096;
+    const EDGEWIND_FFT_BINS = 2048;
+    const EDGEWIND_WAVEFORM_LAST_MS = ((EDGEWIND_WAVEFORM_POINTS - 1) / EDGEWIND_SAMPLE_RATE_HZ) * 1000.0;
+    const EDGEWIND_FREQ_RES_HZ = EDGEWIND_SAMPLE_RATE_HZ / (2 * EDGEWIND_FFT_BINS); // 6.25 Hz/bin
     
     // 刷新页面数据
     async function refreshPage() {
@@ -820,16 +855,56 @@
         
         // 强制设置容器尺寸
         container.style.width = '100%';
-        container.style.height = '300px';
+        container.style.height = '47vh';
         
         const chart = echarts.init(container);
         
+        const wave = Array.isArray(snapshot.waveform_data) ? snapshot.waveform_data : [];
+        const len = wave.length;
+        const dtMs = (len > 1) ? (EDGEWIND_WAVEFORM_LAST_MS / (len - 1)) : 0;
+
+        // [t(ms), y] 数据对（value 轴），保证缩放/拖拽按真实数值工作
+        const seriesData = new Array(len);
+        let yMin = Infinity;
+        let yMax = -Infinity;
+        for (let i = 0; i < len; i++) {
+            const t = i * dtMs;
+            const y = wave[i];
+            seriesData[i] = [t, y];
+            const n = Number(y);
+            if (Number.isFinite(n)) {
+                if (n < yMin) yMin = n;
+                if (n > yMax) yMax = n;
+            }
+        }
+        if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+            yMin = 0;
+            yMax = 0;
+        }
+
+        // 余量 + 必含 0
+        let fullMin = Math.min(0, yMin);
+        let fullMax = Math.max(0, yMax);
+        let span = fullMax - fullMin;
+        if (!(span > 0)) span = Math.max(Math.abs(fullMin), Math.abs(fullMax), 1);
+        const pad = Math.max(span * 0.1, 0.1);
+        fullMin -= pad;
+        fullMax += pad;
+
+        // 显式提供全量范围，保证缩放能回到完整窗口
+        try {
+            chart.__edgewindFullExtentX = { min: 0, max: (len > 0 ? seriesData[len - 1][0] : EDGEWIND_WAVEFORM_LAST_MS) };
+            chart.__edgewindFullExtentY = { min: fullMin, max: fullMax };
+        } catch (e) {}
+
         const option = {
             tooltip: {
                 trigger: 'axis',
                 formatter: function(params) {
                     const point = params[0];
-                    return `采样点: ${point.axisValue}<br/>${point.seriesName}: ${point.value.toFixed(3)} ${unit}`;
+                    const t = Array.isArray(point.value) ? point.value[0] : point.axisValue;
+                    const y = Array.isArray(point.value) ? point.value[1] : point.value;
+                    return `时间: ${Number(t).toFixed(2)} ms<br/>${point.seriesName}: ${Number(y).toFixed(3)} ${unit}`;
                 }
             },
             grid: {
@@ -844,22 +919,27 @@
                 {
                     type: 'inside',
                     xAxisIndex: 0,
-                    filterMode: 'filter'
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
                 },
                 {
                     type: 'inside',
                     yAxisIndex: 0,
-                    filterMode: 'empty'
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
                 }
             ],
             xAxis: {
-                type: 'category',
-                data: Array.from({length: snapshot.waveform_data.length}, (_, i) => i),
-                name: '采样点',
+                type: 'value',
+                name: '时间 (ms)',
                 nameLocation: 'center',
                 nameGap: 25,
                 axisLabel: {
-                    interval: Math.floor(snapshot.waveform_data.length / 8)
+                    formatter: '{value}'
                 }
             },
             yAxis: {
@@ -867,7 +947,9 @@
                 name: `${yAxisName} (${unit})`,
                 nameLocation: 'center',
                 nameGap: 45,
-                scale: false,  // 确保包含 0
+                scale: false,
+                min: fullMin,
+                max: fullMax,
                 axisLabel: {
                     formatter: '{value}'
                 }
@@ -875,7 +957,7 @@
             series: [{
                 name: snapshot.channel_label,
                 type: 'line',
-                data: snapshot.waveform_data,
+                data: seriesData,
                 smooth: false,
                 symbol: 'none',
                 lineStyle: { 
@@ -913,22 +995,42 @@
         
         // 强制设置容器尺寸
         container.style.width = '100%';
-        container.style.height = '300px';
+        container.style.height = '47vh';
         
         const chart = echarts.init(container);
         
-        // 生成频率轴：与“实时监测-频域分析”保持一致（5 Hz/bin）
-        // 说明：快照中只保存了部分频谱 bins（fft_data 数组），这里应按 bin->Hz 的固定分辨率映射，
-        // 否则用 samplingRate/fftLength 反推会因 fftLength 取值不一致导致频率轴偏差（你看到的×2问题）。
-        const FREQ_RES = 5.0; // Hz/bin
-        const freqAxis = snapshot.fft_data.map((_, i) => (i * FREQ_RES).toFixed(1));
+        const fft = Array.isArray(snapshot.fft_data) ? snapshot.fft_data : [];
+        const len = fft.length;
+        const inferredBinStep = (len > 1)
+            ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (len - 1)))
+            : 1;
+
+        const seriesData = new Array(len);
+        let yMax = 0;
+        for (let i = 0; i < len; i++) {
+            const freq = (i * inferredBinStep) * EDGEWIND_FREQ_RES_HZ;
+            const amp = Number.isFinite(fft[i]) ? fft[i] : 0;
+            if (amp > yMax) yMax = amp;
+            seriesData[i] = [freq, amp];
+        }
+
+        const xMax = len > 0 ? seriesData[len - 1][0] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ);
+        const autoMax = (yMax > 0 ? yMax * 1.1 : 1);
+        const fullMax = Math.max(autoMax * 10, 10);
+
+        try {
+            chart.__edgewindFullExtentX = { min: 0, max: xMax };
+            chart.__edgewindFullExtentY = { min: 0, max: fullMax };
+        } catch (e) {}
         
         const option = {
             tooltip: {
                 trigger: 'axis',
                 formatter: function(params) {
                     const point = params[0];
-                    return `频率: ${point.axisValue} Hz<br/>幅值: ${point.value.toFixed(4)}`;
+                    const f = Array.isArray(point.value) ? point.value[0] : point.axisValue;
+                    const a = Array.isArray(point.value) ? point.value[1] : point.value;
+                    return `频率: ${Number(f).toFixed(2)} Hz<br/>幅值: ${Number(a).toFixed(4)}`;
                 }
             },
             grid: {
@@ -943,23 +1045,29 @@
                 {
                     type: 'inside',
                     xAxisIndex: 0,
-                    filterMode: 'filter'
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
                 },
                 {
                     type: 'inside',
                     yAxisIndex: 0,
-                    filterMode: 'empty'
+                    filterMode: 'none',
+                    zoomOnMouseWheel: false,
+                    moveOnMouseMove: false,
+                    moveOnMouseWheel: false
                 }
             ],
             xAxis: {
-                type: 'category',
-                data: freqAxis,
+                type: 'value',
+                min: 0,
+                max: xMax,
                 name: '频率 (Hz)',
                 nameLocation: 'center',
                 nameGap: 25,
                 axisLabel: {
-                    interval: Math.floor(freqAxis.length / 8),
-                    rotate: 0
+                    formatter: '{value}'
                 }
             },
             yAxis: {
@@ -967,6 +1075,8 @@
                 name: '幅值',
                 nameLocation: 'center',
                 nameGap: 45,
+                min: 0,
+                max: fullMax,
                 axisLabel: {
                     formatter: '{value}'
                 }
@@ -974,7 +1084,7 @@
             series: [{
                 name: '频谱',
                 type: 'line',
-                data: snapshot.fft_data,
+                data: seriesData,
                 smooth: false,
                 symbol: 'none',
                 areaStyle: {

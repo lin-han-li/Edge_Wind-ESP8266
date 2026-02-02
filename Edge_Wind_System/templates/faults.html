@@ -83,7 +83,7 @@
                     </div>
                     <div class="col-md-8">
                         <h6 class="mb-3">知识图谱诊断</h6>
-                        <div id="diagnosis-graph" style="width: 100%; height: 850px;"></div>
+                        <div id="diagnosis-graph" style="width: 100%; height: 100%; min-height: 850px;"></div>
                     </div>
                 </div>
             </div>
@@ -264,6 +264,23 @@
         color: #1f2937 !important;
         background: #ffffff !important;
     }
+
+    #diagnosisModal .modal-body .row {
+        height: 100%;
+    }
+
+    #diagnosisModal .modal-body .col-md-8 {
+        display: flex;
+        flex-direction: column;
+    }
+
+    #diagnosisModal .modal-body .col-md-8 h6 {
+        flex: 0 0 auto;
+    }
+
+    #diagnosisModal #diagnosis-graph {
+        flex: 1;
+    }
     
     #diagnosisModal .modal-footer {
         flex-shrink: 0;
@@ -380,6 +397,19 @@
     let originalGraphData = null;  // 保存原始图谱数据，用于重置
     let expandedNodes = new Set();  // 记录已展开的节点，避免重复展开
     let previousFaultIds = null;  // 存储上一次的故障ID集合，用于检测新故障
+
+    const DEFAULT_GRAPH_ZOOM = 1.35;
+    const DEFAULT_GRAPH_CENTER = ['50%', '55%'];
+
+    function applyGraphInitialView() {
+        if (!diagnosisChart) return;
+        diagnosisChart.setOption({
+            series: [{
+                zoom: DEFAULT_GRAPH_ZOOM,
+                center: DEFAULT_GRAPH_CENTER
+            }]
+        }, { notMerge: false, lazyUpdate: true, silent: true });
+    }
 
     // 文件名清洗：Windows 不允许出现 \ / : * ? " < > |
     function sanitizeFilename(name) {
@@ -932,6 +962,7 @@
             if (diagnosisChart) {
                 setTimeout(() => {
                     diagnosisChart.resize();
+                    applyGraphInitialView();
                 }, 200);
             }
             modalElement.removeEventListener('shown.bs.modal', handler);
@@ -958,6 +989,7 @@
             
             // 图表调整大小
             diagnosisChart.resize();
+            applyGraphInitialView();
             
             // ========== 强制绑定点击事件（在图表更新后） ==========
             // 1. 先解绑所有现有的事件监听器，防止重复绑定
@@ -1101,6 +1133,8 @@
                     gravity: 0.1,
                     layoutAnimation: true
                 },
+                zoom: DEFAULT_GRAPH_ZOOM,
+                center: DEFAULT_GRAPH_CENTER,
                 roam: true,
                 draggable: true,
                 label: {
@@ -1850,4 +1884,3 @@
     });
 </script>
 {% endblock %}
-

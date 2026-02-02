@@ -1519,12 +1519,27 @@
         freq: new Map()
     };
 
+    // ========== 采样参数（与下位机对齐）==========
+    // 下位机：4096 点 @ 25.6kHz；上传 FFT：2048 点（0..(Fs/2 - Fs/N)）
+    // 说明：前端用于把“数组索引”映射为真实时间/频率轴。
+    const EDGEWIND_SAMPLE_RATE_HZ = 25600;
+    const EDGEWIND_WAVEFORM_POINTS = 4096;
+    const EDGEWIND_FFT_BINS = 2048;
+
+    // 最后一个采样点的时间（ms）：(N-1)/Fs
+    const EDGEWIND_WAVEFORM_LAST_MS = ((EDGEWIND_WAVEFORM_POINTS - 1) / EDGEWIND_SAMPLE_RATE_HZ) * 1000.0;
+    // 频率分辨率（Hz/bin）：Fs/N，其中 N=2*FFT_BINS
+    const EDGEWIND_FREQ_RES_HZ = EDGEWIND_SAMPLE_RATE_HZ / (2 * EDGEWIND_FFT_BINS);
+
     function _getTimeSeriesBuffer(len) {
         let buf = _edgewindSeriesCache.time.get(len);
         if (!buf) {
             const axis = new Array(len);
             const data = new Array(len);
-            const dt = 200 / len;
+            // 关键：按下位机采样参数映射时间轴
+            // - 不管后端是否对波形做了抽取/降采样，前端都把当前数组“均匀铺满到 (N-1)/Fs 的时间窗口”
+            // - 这样显示的时间范围始终与下位机一致（约 159.961ms）
+            const dt = (len > 1) ? (EDGEWIND_WAVEFORM_LAST_MS / (len - 1)) : 0;
             for (let i = 0; i < len; i++) {
                 const t = i * dt;
                 axis[i] = t;
@@ -2654,8 +2669,8 @@
                     frequencyDomainChart.clear();
                 }
         
-        // 物理常数（与后端一致）
-        const FREQ_RES = 5.0;  // 频率分辨率：5 Hz/bin
+        // 物理常数（与下位机一致）
+        const FREQ_RES = EDGEWIND_FREQ_RES_HZ;  // Hz/bin = Fs/N = 25600/4096 = 6.25
         const MAX_DISPLAY_BINS = 0;  // 0=不限制，显示全部
         
         // 如果后端提供了FFT数据，直接使用
@@ -2663,16 +2678,20 @@
         const frequencies = [];
             const fftData = [];
             
-            // 后端提供115个bin（0-575Hz），每个bin对应5Hz
-            // Bin 0 = 0Hz (DC)
-            // Bin 10 = 50Hz (E01故障) ← 关键！
-            // Bin 30 = 150Hz (谐波)
-            // 显示前110个bin（0-550Hz）
+            // 下位机上传 2048 个 bin：k=0..2047，频率 f=k*6.25Hz，最高约 12.794kHz
             const displayLength = MAX_DISPLAY_BINS > 0
                 ? Math.min(fft_spectrum.length, MAX_DISPLAY_BINS)
                 : fft_spectrum.length;
+
+            // 若后端对频谱做过抽取（例如 2048 -> 128），这里按“均匀抽取”的步长推断真实 bin 索引。
+            // - full: displayLength=2048 => step≈1
+            // - downsample: displayLength=128 => step≈16
+            const inferredBinStep = (displayLength > 1)
+                ? Math.max(1, Math.round((EDGEWIND_FFT_BINS - 1) / (displayLength - 1)))
+                : 1;
+
             for (let i = 0; i < displayLength; i++) {
-                const freq = i * FREQ_RES;  // 精确的5Hz分辨率
+                const freq = (i * inferredBinStep) * FREQ_RES;
                 frequencies.push(freq);
                 fftData.push(fft_spectrum[i]);  // 直接使用后端DFT数据
             }
@@ -2799,7 +2818,7 @@
             xAxis: {
                 type: 'value',
                 min: 0,
-                max: frequencies.length ? frequencies[frequencies.length - 1] : 550,
+                max: frequencies.length ? frequencies[frequencies.length - 1] : ((EDGEWIND_FFT_BINS - 1) * EDGEWIND_FREQ_RES_HZ),
                 name: '频率 (Hz)',
                 nameLocation: 'middle',
                 nameGap: 30,
@@ -2808,9 +2827,11 @@
                     formatter: function(value) {
                         const freq = Number(value);
                         if (!Number.isFinite(freq)) return '';
-                        // 特别标注50Hz（E01故障频率）
-                        if (Math.abs(freq - 50) < 0.1) return '50Hz';
-                        if (freq % 50 === 0) return freq + 'Hz';
+                        // 特别标注 50Hz（E01 故障频率）
+                        if (Math.abs(freq - 50) <= (EDGEWIND_FREQ_RES_HZ / 2)) return '50Hz';
+                        // 仅显示整 50Hz 刻度（避免标签过密）；注意浮点误差
+                        const m = freq / 50;
+                        if (Math.abs(m - Math.round(m)) < 1e-6) return Math.round(m) * 50 + 'Hz';
                         return '';
                     }
                 },

@@ -1173,10 +1173,10 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         return !strict;
     }
 
-    /* 动态信息：step 对应发送点数（1024/step） */
+    /* 动态信息：step 对应发送点数（4096/step，与当前采样点数一致） */
     uint32_t pts = 0;
     if (ds >= 1u) {
-        pts = 1024u / ds;
+        pts = 4096u / ds;
         if (pts == 0u) pts = 1u;
     }
     char chunk_info[32];
@@ -1239,7 +1239,7 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         char tips[220];
         (void)snprintf(tips, sizeof(tips),
                        "警告：限频过小会提高带宽/CPU/串口压力，可能导致掉帧或丢包。\n"
-                       "降采样：step=%lu -> points=%lu (1024/step)\n"
+                       "降采样：step=%lu -> points=%lu (4096/step)\n"
                        "分段：%s\n"
                        "建议：限频≥50ms（推荐200ms）。",
                        (unsigned long)ds, (unsigned long)pts,
@@ -1252,7 +1252,7 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         char tips[220];
         (void)snprintf(tips, sizeof(tips),
                        "警告：降采样 step 过大可能导致波形细节丢失。\n"
-                       "当前：step=%lu -> points=%lu (1024/step)\n"
+                       "当前：step=%lu -> points=%lu (4096/step)\n"
                        "分段：%s\n"
                        "建议：step=4 或 8（1=全量）。",
                        (unsigned long)ds, (unsigned long)pts,
@@ -1266,7 +1266,7 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         char tips[220];
         (void)snprintf(tips, sizeof(tips),
                        "参数看起来合理。\n"
-                       "降采样：step=%lu -> points=%lu (1024/step)\n"
+                       "降采样：step=%lu -> points=%lu (4096/step)\n"
                        "分段：%s\n"
                        "建议：step=4，分段4KB/10ms（可一键关闭分段）",
                        (unsigned long)ds, (unsigned long)pts,

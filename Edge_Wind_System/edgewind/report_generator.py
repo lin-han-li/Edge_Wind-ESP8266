@@ -196,7 +196,7 @@ def _infer_fault_code_from_type(fault_type: str) -> str:
     return 'E00'
 
 
-def generate_workorder_docx(work_order, device, graph_image_dataurl: str | None = None) -> Document:
+def generate_workorder_docx(work_order, device, graph_image_dataurl: str | None = None):
     """
     生成“维修派工单”Word文档（参考旧版 app.py 的专业排版）。
 
@@ -253,7 +253,22 @@ def generate_workorder_docx(work_order, device, graph_image_dataurl: str | None 
     }
 
     device_id = getattr(device, 'device_id', None) or getattr(work_order, 'device_id', '') or '未知设备'
-    location = getattr(device, 'location', None) or getattr(work_order, 'location', None) or device_id
+    device_location = getattr(device, 'location', None)
+    order_location = getattr(work_order, 'location', None)
+
+    device_loc_norm = str(device_location).strip() if device_location is not None else ''
+    order_loc_norm = str(order_location).strip() if order_location is not None else ''
+    device_id_norm = str(device_id).strip()
+
+    # 优先使用有效的设备安装位置；若设备位置为空/等于设备名称，则回退工单位置
+    if device_loc_norm and device_loc_norm != device_id_norm:
+        location = device_loc_norm
+    elif order_loc_norm and order_loc_norm != device_id_norm:
+        location = order_loc_norm
+    elif device_loc_norm or order_loc_norm:
+        location = device_loc_norm or order_loc_norm
+    else:
+        location = '未设置'
     fault_type_raw = getattr(work_order, 'fault_type', None) or '未知故障'
     fault_type_display = _strip_english_in_brackets(fault_type_raw)
     fault_code = _infer_fault_code_from_type(fault_type_display)
@@ -357,4 +372,3 @@ def generate_workorder_docx(work_order, device, graph_image_dataurl: str | None 
     set_run_font(run_foot, size=Pt(9), color=RGBColor(100, 100, 100))
 
     return doc
-

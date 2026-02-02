@@ -137,10 +137,17 @@ bool ESP_AutoReconnect_SetLastReporting(bool last_reporting);
 bool ESP_Config_LoadFromSD_UIFiles(void);
 
 // 数据采样与发送参数
-#define WAVEFORM_POINTS 1024 // 本地模拟生成的波形点数 (用于高精度 FFT 计算)
+/* 波形点数：必须与采样双缓冲长度一致（否则 src[][] 步长不一致会读错内存） */
+#ifndef WAVEFORM_POINTS
+#ifdef AD_ACQ_POINTS
+#define WAVEFORM_POINTS AD_ACQ_POINTS
+#else
+#define WAVEFORM_POINTS 1024
+#endif
+#endif
 /* * ⚠️ 关键参数 WAVEFORM_SEND_STEP:
- * 因为 1024 个浮点数转成字符串通过 UART 发送，数据量极大(约几KB)，容易造成阻塞或溢出。
- * 这里设置为 4，表示每隔 4 个点取 1 个点发送给后端 (1024/4 = 256 点)，
+ * 浮点数转成字符串通过 UART 发送，数据量较大，容易造成阻塞或溢出。
+ * 这里 step=4 表示每隔 4 个点取 1 个点发送（如 4096/4=1024 点），
  * 既保证了波形大致形状，又显著降低了数据传输量。
  */
 // 压力测试：不降采样（用户要求）
@@ -149,7 +156,8 @@ bool ESP_Config_LoadFromSD_UIFiles(void);
 #endif
 
 #ifndef FFT_POINTS
-#define FFT_POINTS 256
+/* FFT 点数固定为采样点数的 1/2（4096->2048，实 FFT 输出 N/2 个幅值） */
+#define FFT_POINTS (WAVEFORM_POINTS / 2)
 #endif
 
     /* ================= 数据结构定义 ================= */

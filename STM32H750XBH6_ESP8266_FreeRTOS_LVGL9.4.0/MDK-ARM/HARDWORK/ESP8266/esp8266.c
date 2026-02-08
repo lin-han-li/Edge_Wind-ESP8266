@@ -288,6 +288,9 @@ static void ESP_StreamRx_Start(void);
 static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len);
 void ESP_UI_Internal_OnLog(const char *line);
 static void ESP_SetServerReportMode(uint8_t full);
+static void ESP_SetServerDownsampleStep(uint32_t step);
+static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step);
+static bool ESP_CommParams_SaveToSD(void);
 
 // “核武器”：强制停止 USART2 的 RX DMA/中断状态机，切换到 AT(阻塞收发)前必须调用
 static void ESP_ForceStop_DMA(void);
@@ -308,6 +311,9 @@ static volatile uint8_t g_server_reset_pending = 0;
 // 服务器请求的上报模式：0=summary, 1=full
 static volatile uint8_t g_server_report_full = 0;
 static volatile uint8_t g_server_report_full_dirty = 0;
+// 服务器请求的降采样步进：1..64
+static volatile uint32_t g_server_downsample_step = (uint32_t)WAVEFORM_SEND_STEP;
+static volatile uint8_t g_server_downsample_dirty = 0;
 // 当检测到链路异常关键字（CLOSED/ERROR）时置 1，主循环触发软重连
 static volatile uint8_t g_link_reconnect_pending = 0;
 
@@ -535,6 +541,8 @@ bool ESP_CommParams_LoadFromSD(void)
 #define UI_CFG_DIR               "0:/config"
 #define UI_WIFI_CFG_FILE         "0:/config/ui_wifi.cfg"
 #define UI_SERVER_CFG_FILE       "0:/config/ui_server.cfg"
+#define UI_PARAM_CFG_FILE        "0:/config/ui_param.cfg"
+#define UI_PARAM_TMP_FILE        "0:/config/.ui_param.cfg.tmp"
 #define UI_AUTOREPORT_CFG_FILE   "0:/config/ui_autoreport.cfg"
 #define UI_AUTOREPORT_TMP_FILE   "0:/config/.ui_autoreport.cfg.tmp"
 
@@ -572,6 +580,69 @@ static FRESULT esp_cfg_ensure_dir(void)
         return FR_OK;
     }
     return res;
+}
+
+static bool ESP_CommParams_SaveToSD(void)
+{
+    if (!esp_sd_try_mount(200U)) {
+        return false;
+    }
+    if (esp_cfg_ensure_dir() != FR_OK) {
+        return false;
+    }
+
+    ESP_CommParams_t p;
+    ESP_CommParams_Get(&p);
+
+    FIL fil;
+    if (f_open(&fil, UI_PARAM_TMP_FILE, FA_CREATE_ALWAYS | FA_WRITE) != FR_OK) {
+        return false;
+    }
+
+    char buf[320];
+    int n = snprintf(buf, sizeof(buf),
+                     "HEARTBEAT_MS=%lu\n"
+                     "SENDLIMIT_MS=%lu\n"
+                     "HTTP_TIMEOUT_MS=%lu\n"
+                     "HARDRESET_S=%lu\n"
+                     "DOWNSAMPLE_STEP=%lu\n"
+                     "CHUNK_KB=%lu\n"
+                     "CHUNK_DELAY_MS=%lu\n",
+                     (unsigned long)p.heartbeat_ms,
+                     (unsigned long)p.min_interval_ms,
+                     (unsigned long)p.http_timeout_ms,
+                     (unsigned long)p.hardreset_sec,
+                     (unsigned long)p.wave_step,
+                     (unsigned long)p.chunk_kb,
+                     (unsigned long)p.chunk_delay_ms);
+    if (n <= 0 || n >= (int)sizeof(buf)) {
+        (void)f_close(&fil);
+        (void)f_unlink(UI_PARAM_TMP_FILE);
+        return false;
+    }
+
+    UINT bw = 0;
+    FRESULT wr = f_write(&fil, buf, (UINT)n, &bw);
+    if (wr != FR_OK || bw != (UINT)n) {
+        (void)f_close(&fil);
+        (void)f_unlink(UI_PARAM_TMP_FILE);
+        return false;
+    }
+
+    FRESULT sr = f_sync(&fil);
+    (void)f_close(&fil);
+    if (sr != FR_OK) {
+        (void)f_unlink(UI_PARAM_TMP_FILE);
+        return false;
+    }
+
+    (void)f_unlink(UI_PARAM_CFG_FILE);
+    FRESULT r = f_rename(UI_PARAM_TMP_FILE, UI_PARAM_CFG_FILE);
+    if (r != FR_OK) {
+        (void)f_unlink(UI_PARAM_TMP_FILE);
+        return false;
+    }
+    return true;
 }
 
 static bool esp_autoreport_write(bool auto_reconnect_en, bool last_reporting)
@@ -1276,6 +1347,54 @@ static void ESP_SetServerReportMode(uint8_t full)
     }
 }
 
+static void ESP_SetServerDownsampleStep(uint32_t step)
+{
+    if (step < 1U) step = 1U;
+    if (step > 64U) step = 64U;
+    if (g_server_downsample_step != step)
+    {
+        g_server_downsample_step = step;
+        g_server_downsample_dirty = 1U;
+    }
+}
+
+static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step)
+{
+    if (!s || !out_step) {
+        return false;
+    }
+
+    const char *p = strstr(s, "\"downsample_step\"");
+    if (!p) {
+        return false;
+    }
+    p += strlen("\"downsample_step\"");
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != ':') {
+        return false;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p < '0' || *p > '9') {
+        return false;
+    }
+
+    uint32_t step = 0;
+    while (*p >= '0' && *p <= '9')
+    {
+        step = (step * 10U) + (uint32_t)(*p - '0');
+        if (step > 9999U) {
+            break;
+        }
+        p++;
+    }
+
+    if (step < 1U) step = 1U;
+    if (step > 64U) step = 64U;
+    *out_step = step;
+    return true;
+}
+
 void ESP_Console_Init(void)
 {
 #if (ESP_CONSOLE_ENABLE)
@@ -1328,7 +1447,30 @@ void ESP_Console_Poll(void)
         }
     }
 
-    // 2.1) 链路异常：尽快软重连，避免长时间“卡住”
+    // 2.1) 处理“服务器下发 downsample_step”指令
+    if (g_server_downsample_dirty)
+    {
+        g_server_downsample_dirty = 0;
+
+        ESP_CommParams_t p;
+        ESP_CommParams_Get(&p);
+        uint32_t target = (uint32_t)g_server_downsample_step;
+        if (target < 1U) target = 1U;
+        if (target > 64U) target = 64U;
+        ESP_Log("[服务器命令] downsample_step=%lu：应用降采样并写入SD\r\n", (unsigned long)target);
+
+        if (p.wave_step != target) {
+            p.wave_step = target;
+            ESP_CommParams_Apply(&p);
+        }
+
+        if (ESP_CommParams_SaveToSD()) {
+            ESP_Log("[服务器命令] downsample_step=%lu：已生效并保存到SD\r\n", (unsigned long)target);
+        } else {
+            ESP_Log("[服务器命令] downsample_step=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
+        }
+    }
+
     if (g_report_enabled && g_link_reconnect_pending && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
     {
         g_link_reconnect_pending = 0;
@@ -1488,8 +1630,8 @@ void ESP_Post_Summary(void)
     uint32_t seq = ++s_seq;
 
     // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"channels\":[",
-                     g_sys_cfg.node_id, g_fault_code, (unsigned long)seq))
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"channels\":[",
+                     g_sys_cfg.node_id, g_fault_code, (unsigned long)seq, (unsigned long)ESP_CommParams_WaveStep()))
         return;
 
     for (int i = 0; i < 4; i++)
@@ -1676,8 +1818,8 @@ void ESP_Post_Data(void)
     uint32_t seq = ++s_seq;
 
     // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"channels\":[",
-                    g_sys_cfg.node_id, g_fault_code, (unsigned long)seq))
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"channels\":[",
+                    g_sys_cfg.node_id, g_fault_code, (unsigned long)seq, (unsigned long)ESP_CommParams_WaveStep()))
         return;
 
     // 循环写入 4 个通道的数据
@@ -2081,6 +2223,12 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
         ESP_SetServerReportMode(0);
     }
     // 滑动窗口中检测链路异常关键字
+    uint32_t server_downsample_step = 0;
+    if (ESP_TryParseDownsampleStep(g_stream_window, &server_downsample_step))
+    {
+        ESP_SetServerDownsampleStep(server_downsample_step);
+    }
+
     if (!g_link_reconnecting &&
         (strstr(g_stream_window, "CLOSED") ||
          strstr(g_stream_window, "CONNECT FAIL") ||

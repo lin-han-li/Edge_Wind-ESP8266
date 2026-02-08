@@ -41,6 +41,7 @@ _last_bad_frame_log_ts = {}  # {node_id: ts}：坏帧诊断限频日志
 active_nodes = {}  # 将在app.py中初始化并传入
 node_commands = {}  # 将在app.py中初始化并传入
 node_report_modes = {}  # {node_id: 'summary'|'full'}
+node_downsample_commands = {}  # {node_id: int(1..64)}
 DEFAULT_REPORT_MODE = 'summary'
 
 # 节点超时时间（秒）
@@ -226,12 +227,14 @@ def _lighten_channels(channels):
         })
     return out
 
-def init_api_blueprint(app, socketio, executor, nodes, commands, report_modes):
+def init_api_blueprint(app, socketio, executor, nodes, commands, report_modes, downsample_commands):
     """初始化API蓝图的全局变量"""
-    global active_nodes, node_commands, node_report_modes, db_executor, socketio_instance, app_instance
+    global active_nodes, node_commands, node_report_modes, node_downsample_commands
+    global db_executor, socketio_instance, app_instance
     active_nodes = nodes
     node_commands = commands
     node_report_modes = report_modes
+    node_downsample_commands = downsample_commands
     db_executor = executor
     socketio_instance = socketio
     app_instance = app
@@ -242,6 +245,61 @@ def _get_report_mode(node_id: str | None) -> str:
         return DEFAULT_REPORT_MODE
     mode = (node_report_modes.get(node_id) or '').strip().lower()
     return mode if mode in ('summary', 'full') else DEFAULT_REPORT_MODE
+
+
+def _parse_downsample_step(value) -> int | None:
+    """解析并校验 downsample_step（仅接受 1..64 的整数）。"""
+    if value is None or isinstance(value, bool):
+        return None
+
+    step = None
+    if isinstance(value, int):
+        step = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return None
+        step = int(value)
+    else:
+        raw = str(value).strip()
+        if not raw or not raw.isdigit():
+            return None
+        step = int(raw)
+
+    if 1 <= step <= 64:
+        return step
+    return None
+
+
+def _sync_active_node_downsample_step(node_id: str, step: int) -> None:
+    """把当前 downsample_step 同步到 active_nodes 的轻量数据。"""
+    if not node_id:
+        return
+    try:
+        if node_id in active_nodes:
+            active_nodes[node_id].setdefault('data', {})
+            active_nodes[node_id]['data']['downsample_step'] = int(step)
+    except Exception:
+        pass
+
+
+def _ack_downsample_command(node_id: str, payload: dict) -> int | None:
+    """
+    设备上报 downsample_step 时做 ACK：
+    - 更新 active_nodes 中的当前值
+    - 若与 pending 命令一致则清除 pending
+    """
+    if not node_id or not isinstance(payload, dict):
+        return None
+
+    reported_step = _parse_downsample_step(payload.get('downsample_step'))
+    if reported_step is None:
+        return None
+
+    _sync_active_node_downsample_step(node_id, reported_step)
+    pending = node_downsample_commands.get(node_id)
+    if pending is not None and int(pending) == reported_step:
+        node_downsample_commands.pop(node_id, None)
+    return reported_step
 
 
 def _device_auth_or_401():
@@ -316,9 +374,13 @@ def register_device():
                         'node_id': device_id,
                         'status': 'online',
                         'fault_code': getattr(device, 'fault_code', 'E00') or 'E00',
+                        'report_mode': _get_report_mode(device_id),
                         'channels': [],
                     }
                 }
+                ds = _parse_downsample_step(data.get('downsample_step'))
+                if ds is not None:
+                    active_nodes[device_id]['data']['downsample_step'] = ds
             except Exception:
                 pass
             # WebSocket：通知前端立即刷新节点列表
@@ -331,6 +393,8 @@ def register_device():
                         'status': 'online',
                         'fault_code': getattr(device, 'fault_code', 'E00') or 'E00',
                         'timestamp': time.time(),
+                        'report_mode': _get_report_mode(device_id),
+                        'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
                         'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
                     }, namespace='/')
             except Exception:
@@ -361,9 +425,13 @@ def register_device():
                         'node_id': device_id,
                         'status': 'online',
                         'fault_code': 'E00',
+                        'report_mode': _get_report_mode(device_id),
                         'channels': [],
                     }
                 }
+                ds = _parse_downsample_step(data.get('downsample_step'))
+                if ds is not None:
+                    active_nodes[device_id]['data']['downsample_step'] = ds
             except Exception:
                 pass
             # WebSocket：通知前端立即刷新节点列表
@@ -375,6 +443,8 @@ def register_device():
                         'status': 'online',
                         'fault_code': 'E00',
                         'timestamp': time.time(),
+                        'report_mode': _get_report_mode(device_id),
+                        'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
                         'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
                     }, namespace='/')
             except Exception:
@@ -450,9 +520,15 @@ def upload_data():
                 **(data or {}),
                 'node_id': device_id,
                 'device_id': device_id,
-                'location': device.location
+                'location': device.location,
+                'report_mode': _get_report_mode(device_id),
             }
         }
+        reported_downsample_step = _ack_downsample_command(device_id, data)
+        if reported_downsample_step is None:
+            pending_step = node_downsample_commands.get(device_id)
+            if pending_step is not None:
+                _sync_active_node_downsample_step(device_id, int(pending_step))
 
         # 3) 保存波形数据点（用于历史趋势/后续分析）
         # 性能说明：多节点高频上报时，频繁落库会显著拖慢响应。
@@ -505,6 +581,7 @@ def upload_data():
                     'fault_code': curr_fault,
                     'timestamp': current_timestamp,
                     'report_mode': _get_report_mode(device_id),
+                    'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
                     'metrics': {
                         'voltage': float((data or {}).get('voltage', 0) or 0),
                         'voltage_neg': float((data or {}).get('voltage_neg', 0) or 0),
@@ -527,6 +604,9 @@ def upload_data():
             if cmd == 'reset' and (fault_code == 'E00'):
                 node_commands.pop(device_id, None)
         resp['report_mode'] = _get_report_mode(device_id)
+        pending_step = node_downsample_commands.get(device_id)
+        if pending_step is not None:
+            resp['downsample_step'] = int(pending_step)
         return jsonify(resp), 200
 
     except Exception as e:
@@ -587,6 +667,11 @@ def node_heartbeat():
                 'fault_code': fault_code,
                 'data': data
             }
+        reported_downsample_step = _ack_downsample_command(node_id, data)
+        if reported_downsample_step is None:
+            pending_step = node_downsample_commands.get(node_id)
+            if pending_step is not None:
+                _sync_active_node_downsample_step(node_id, int(pending_step))
 
         # 2. Initialize Data Structure
         processed_data = {
@@ -793,6 +878,7 @@ def node_heartbeat():
                 'fault_code': fault_code,
                 'timestamp': current_timestamp,
                 'report_mode': _get_report_mode(node_id),
+                'downsample_step': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('downsample_step'),
                 'metrics': {
                     'voltage': processed_data.get('voltage', 0),
                     'voltage_neg': processed_data.get('voltage_neg', 0),
@@ -830,6 +916,9 @@ def node_heartbeat():
             if cmd == 'reset' and fault_code == 'E00':
                 node_commands.pop(node_id, None)
         response_payload['report_mode'] = _get_report_mode(node_id)
+        pending_step = node_downsample_commands.get(node_id)
+        if pending_step is not None:
+            response_payload['downsample_step'] = int(pending_step)
         
         # 9. 节流更新数据库设备心跳（避免 50Hz 高频心跳把 SQLite 打爆）
         last_db = _last_db_heartbeat_ts.get(node_id, 0)
@@ -944,6 +1033,13 @@ def get_active_nodes():
             node_data = node_info['data'].copy()
             node_data['node_id'] = node_id
             node_data['report_mode'] = _get_report_mode(node_id)
+            parsed_step = _parse_downsample_step(node_data.get('downsample_step'))
+            if parsed_step is not None:
+                node_data['downsample_step'] = parsed_step
+            if 'downsample_step' not in node_data:
+                pending_step = node_downsample_commands.get(node_id)
+                if pending_step is not None:
+                    node_data['downsample_step'] = int(pending_step)
             active_nodes_list.append(node_data)
         
         return jsonify({
@@ -986,12 +1082,18 @@ def set_node_report_mode():
         try:
             if socketio_instance:
                 node_info = active_nodes.get(node_id) or {}
+                downsample_step = ((node_info.get('data', {}) or {}).get('downsample_step'))
+                if downsample_step is None:
+                    pending_step = node_downsample_commands.get(node_id)
+                    if pending_step is not None:
+                        downsample_step = int(pending_step)
                 socketio_instance.emit('node_status_update', {
                     'node_id': node_id,
                     'status': node_info.get('status', 'online'),
                     'fault_code': node_info.get('fault_code', 'E00'),
                     'timestamp': time.time(),
-                    'report_mode': mode
+                    'report_mode': mode,
+                    'downsample_step': downsample_step,
                 }, namespace='/')
         except Exception:
             pass
@@ -1000,6 +1102,59 @@ def set_node_report_mode():
 
     except Exception as e:
         logger.exception(f"[/api/nodes/report_mode] 失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_bp.route('/nodes/downsample_step', methods=['POST'])
+@login_required
+def set_node_downsample_step():
+    """设置节点降采样步进（仅 full 模式允许）。"""
+    try:
+        payload = request.get_json() or {}
+        node_id = _normalize_node_id(payload.get('node_id') or payload.get('device_id'))
+        step = _parse_downsample_step(payload.get('step'))
+
+        if not node_id:
+            return jsonify({'success': False, 'error': 'Missing node_id'}), 400
+        if len(node_id) > 100:
+            return jsonify({'success': False, 'error': 'node_id too long (max 100)'}), 400
+        if step is None:
+            return jsonify({'success': False, 'error': 'Invalid step (expected integer 1..64)'}), 400
+
+        mode = _get_report_mode(node_id)
+        if mode != 'full':
+            return jsonify({
+                'success': False,
+                'error': 'Downsample can be changed only in full report mode',
+                'report_mode': mode,
+            }), 409
+
+        node_downsample_commands[node_id] = int(step)
+        _sync_active_node_downsample_step(node_id, int(step))
+
+        try:
+            if socketio_instance:
+                node_info = active_nodes.get(node_id) or {}
+                socketio_instance.emit('node_status_update', {
+                    'node_id': node_id,
+                    'status': node_info.get('status', 'online'),
+                    'fault_code': node_info.get('fault_code', 'E00'),
+                    'timestamp': time.time(),
+                    'report_mode': mode,
+                    'downsample_step': int(step),
+                }, namespace='/')
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True,
+            'node_id': node_id,
+            'downsample_step': int(step),
+            'report_mode': mode,
+        }), 200
+
+    except Exception as e:
+        logger.exception(f"[/api/nodes/downsample_step] 失败: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

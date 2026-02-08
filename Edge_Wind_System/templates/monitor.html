@@ -219,6 +219,21 @@
                             <i class="bi bi-slash-circle"></i> 关闭请求
                         </button>
                     </div>
+                    <div class="input-group input-group-sm" style="width: 250px;">
+                        <span class="input-group-text">降采样</span>
+                        <input
+                            class="form-control"
+                            id="downsample-step-input"
+                            type="number"
+                            min="1"
+                            max="64"
+                            step="1"
+                            value="1"
+                            aria-label="Downsample Step">
+                        <button class="btn btn-outline-light" id="btn-send-downsample" type="button">
+                            下发
+                        </button>
+                    </div>
                     <span class="small text-light" id="report-mode-indicator">当前模式：摘要</span>
                 </div>
             </div>
@@ -304,6 +319,9 @@
     let lastCachedData = null;  // 关键修复：缓存最新数据包，用于即时切换
     let nodeFaultHistory = {};  // 存储每个边缘节点的最后已知故障代码：{ "STM32_Node_001": "E00" }
     let reportModeByNode = {};  // {nodeId: 'summary'|'full'}
+    let downsampleStepByNode = {};  // {nodeId: 1..64}
+    let downsampleDraftByNode = {};  // {nodeId: string}
+    let downsampleAppliedNodeId = null;
     let currentReportMode = 'summary';
 
     // ========== 报警阈值（来自系统设置）==========
@@ -319,7 +337,15 @@
         voltageHighNeg: false,
         leakageHigh: false
     };
-    
+
+    function normalizeDownsampleStep(value) {
+        const n = Number.parseInt(value, 10);
+        if (Number.isInteger(n) && n >= 1 && n <= 64) {
+            return n;
+        }
+        return null;
+    }
+
     function setReportModeButtonState(mode) {
         const btnFull = document.getElementById('btn-request-full');
         const btnSummary = document.getElementById('btn-request-summary');
@@ -349,16 +375,58 @@
         if (btnSummary) btnSummary.disabled = !enabled;
     }
 
+    function setDownsampleControlsEnabled(enabled) {
+        const input = document.getElementById('downsample-step-input');
+        const btn = document.getElementById('btn-send-downsample');
+        const disabled = !enabled;
+        if (input) {
+            input.disabled = disabled;
+            input.title = disabled ? '请先请求全量模式' : '';
+        }
+        if (btn) {
+            btn.disabled = disabled;
+            btn.title = disabled ? '请先请求全量模式' : '';
+        }
+    }
+
+    function applyDownsampleForNode(nodeId, options = {}) {
+        const { force = false, fallbackToDefault = false } = options;
+        const input = document.getElementById('downsample-step-input');
+        if (!input) return;
+        if (!force && document.activeElement === input) return;
+
+        const v = normalizeDownsampleStep(downsampleStepByNode[nodeId]);
+        if (v !== null) {
+            input.value = String(v);
+            return;
+        }
+        const draft = nodeId ? downsampleDraftByNode[nodeId] : undefined;
+        if (typeof draft === 'string' && draft.length > 0) {
+            input.value = draft;
+            return;
+        }
+        if (fallbackToDefault) {
+            input.value = '1';
+        }
+    }
+
     function applyReportModeForNode(nodeId) {
         if (!nodeId) {
             currentReportMode = 'summary';
             setReportModeButtonState(currentReportMode);
             setReportModeButtonsEnabled(false);
+            setDownsampleControlsEnabled(false);
+            applyDownsampleForNode(nodeId, { force: true, fallbackToDefault: true });
+            downsampleAppliedNodeId = null;
             return;
         }
+        const switchedNode = downsampleAppliedNodeId !== nodeId;
         currentReportMode = reportModeByNode[nodeId] || 'summary';
         setReportModeButtonState(currentReportMode);
         setReportModeButtonsEnabled(true);
+        setDownsampleControlsEnabled(currentReportMode === 'full');
+        applyDownsampleForNode(nodeId, { force: switchedNode, fallbackToDefault: switchedNode });
+        downsampleAppliedNodeId = nodeId;
     }
 
     async function requestReportMode(mode) {
@@ -407,6 +475,75 @@
             console.error('[requestReportMode] 失败:', e);
             if (typeof window.showToast === 'function') {
                 window.showToast('请求失败，请稍后重试', 'error');
+            }
+        }
+    }
+
+    async function requestDownsampleStep() {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先选择一个边缘节点', 'warning');
+            }
+            return;
+        }
+        if (currentReportMode !== 'full') {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先切换到全量模式后再下发降采样', 'warning');
+            }
+            return;
+        }
+
+        const input = document.getElementById('downsample-step-input');
+        if (!input) return;
+        const step = normalizeDownsampleStep(input.value);
+        if (step === null) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('降采样范围应为 1~64 的整数', 'warning');
+            }
+            return;
+        }
+
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/downsample_step', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ node_id: currentNodeId, step })
+            });
+
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                const errorData = await resp.json().catch(() => ({}));
+                if (resp.status === 409 && errorData?.report_mode) {
+                    reportModeByNode[currentNodeId] = String(errorData.report_mode).toLowerCase();
+                    applyReportModeForNode(currentNodeId);
+                }
+                throw new Error(errorData.error || `HTTP ${resp.status}`);
+            }
+
+            const data = await resp.json();
+            if (!data.success) {
+                throw new Error(data.error || '请求失败');
+            }
+
+            const newStep = normalizeDownsampleStep(data.downsample_step ?? step) ?? step;
+            downsampleStepByNode[currentNodeId] = newStep;
+            downsampleDraftByNode[currentNodeId] = String(newStep);
+            applyDownsampleForNode(currentNodeId, { force: true });
+            if (typeof window.showToast === 'function') {
+                window.showToast(`已下发降采样 step=${newStep}`, 'success');
+            }
+        } catch (e) {
+            console.error('[requestDownsampleStep] 失败:', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast(String(e?.message || '下发失败，请稍后重试'), 'error');
             }
         }
     }
@@ -642,14 +779,33 @@
         // 绑定上报请求按钮
         const btnFull = document.getElementById('btn-request-full');
         const btnSummary = document.getElementById('btn-request-summary');
+        const btnSendDownsample = document.getElementById('btn-send-downsample');
         if (btnFull) {
             btnFull.addEventListener('click', () => requestReportMode('full'));
         }
         if (btnSummary) {
             btnSummary.addEventListener('click', () => requestReportMode('summary'));
         }
+        if (btnSendDownsample) {
+            btnSendDownsample.addEventListener('click', requestDownsampleStep);
+        }
+        const downsampleInput = document.getElementById('downsample-step-input');
+        if (downsampleInput) {
+            downsampleInput.addEventListener('input', () => {
+                if (currentNodeId) {
+                    downsampleDraftByNode[currentNodeId] = downsampleInput.value;
+                }
+            });
+            downsampleInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.isComposing) {
+                    event.preventDefault();
+                    requestDownsampleStep();
+                }
+            });
+        }
         setReportModeButtonState('summary');
         setReportModeButtonsEnabled(false);
+        setDownsampleControlsEnabled(false);
 
         // 处理URL参数（全局搜索跳转）
         handleURLParams();
@@ -916,6 +1072,11 @@
                     report_mode: (node.report_mode || 'summary').toLowerCase()
                 };
                 reportModeByNode[nodeId] = newConfigs[nodeId].report_mode;
+                const ds = normalizeDownsampleStep(node.downsample_step);
+                if (ds !== null) {
+                    newConfigs[nodeId].downsample_step = ds;
+                    downsampleStepByNode[nodeId] = ds;
+                }
             });
             
             // 检查配置是否发生变化
@@ -1950,6 +2111,11 @@
                             NODE_CONFIGS[node.node_id].report_mode = String(node.report_mode).toLowerCase();
                             reportModeByNode[node.node_id] = NODE_CONFIGS[node.node_id].report_mode;
                         }
+                        const ds = normalizeDownsampleStep(node.downsample_step);
+                        if (ds !== null) {
+                            NODE_CONFIGS[node.node_id].downsample_step = ds;
+                            downsampleStepByNode[node.node_id] = ds;
+                        }
                     }
                     // 关键修复：初始化故障历史记录，避免误触发弹窗
                     nodeFaultHistory[node.node_id] = node.fault_code || 'E00';
@@ -1980,12 +2146,22 @@
                     channels: [],
                     report_mode: (msg.report_mode || 'summary').toLowerCase()
                 };
+                const createdStep = normalizeDownsampleStep(msg.downsample_step);
+                if (createdStep !== null) {
+                    NODE_CONFIGS[nodeId].downsample_step = createdStep;
+                    downsampleStepByNode[nodeId] = createdStep;
+                }
                 renderNodeList();
             } else {
                 NODE_CONFIGS[nodeId].status = msg.status;
                 NODE_CONFIGS[nodeId].fault_code = msg.fault_code;
                 if (msg.report_mode) {
                     NODE_CONFIGS[nodeId].report_mode = String(msg.report_mode).toLowerCase();
+                }
+                const updateStep = normalizeDownsampleStep(msg.downsample_step);
+                if (updateStep !== null) {
+                    NODE_CONFIGS[nodeId].downsample_step = updateStep;
+                    downsampleStepByNode[nodeId] = updateStep;
                 }
             }
 
@@ -1994,6 +2170,9 @@
                 if (currentNodeId === nodeId) {
                     applyReportModeForNode(nodeId);
                 }
+            }
+            if (currentNodeId === nodeId && normalizeDownsampleStep(msg.downsample_step) !== null) {
+                applyDownsampleForNode(nodeId);
             }
             
             // ========== 系统故障日志（全局）：对所有节点的故障码变化进行记录 ==========

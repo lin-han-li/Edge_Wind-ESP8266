@@ -213,6 +213,11 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 | `EDGEWIND_DEVICE_API_KEY` | 设备接口鉴权 Key（可选） | 空=不鉴权 |
 | `FORCE_ASYNC_MODE` | SocketIO 模式：auto/eventlet/gevent/threading | 桌面版会强制 eventlet |
 
+> 说明：`EDGEWIND_WAVEFORM_POINTS` / `EDGEWIND_SPECTRUM_POINTS` 是 **服务器端为了 Web 展示**做的二次降采样（减小推送与渲染压力），与下位机侧“上传参数”不同：
+> - 下位机 `downsample_step`：设备上传波形的降采样步进（影响上传间隔）
+> - 下位机 `upload_points`：设备上传“降采样后最多 N 点”（影响上传点数上限）
+> - 两者可以叠加：例如设备上传 1024 点，服务器仍可能将其二次降采样到 256 点后推送/渲染
+
 ### 4.2 日志与数据落点
 
 - 日志：`Edge_Wind_System/logs/edgewind.log`
@@ -243,6 +248,37 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 - **设置记忆**：回放点数、时段、选中节点等设置会自动保存到 localStorage
 - **单独删除**：可删除指定节点的所有历史数据（不影响其他节点）
 - **缩放交互**：与实时监测一致的图表缩放/平移/重置操作
+
+### 5.2 实时监测页（/monitor）：“全量请求”与参数下发（降采样/上传点数）
+
+实时监测页 `/monitor` 除了订阅节点数据，还支持对**当前选中节点**下发“上传侧参数”。  
+为了避免 Summary 模式下误操作，当前策略是：**仅在 `report_mode === 'full'` 时允许下发**（未全量时控件禁用并提示）。
+
+可下发参数：
+- `downsample_step`（1..64）：设备上传波形时的降采样步进（每 `step` 取 1 点）
+- `upload_points`（256..4096，256 步进）：**降采样后的最多上传点数**（只上传前 N 点）
+
+UI 位置（与“请求全量/关闭请求”同一行）：
+- 左侧：`upload_points` 输入框（256 步进）+ “下发”
+- 右侧：`downsample_step` 输入框（1 步进）+ “下发”
+- 两个输入框均支持：**Enter 即下发**
+
+实际每通道上传点数（概念）：
+
+```text
+downsampled_points = floor((WAVEFORM_POINTS - 1) / downsample_step) + 1   # WAVEFORM_POINTS 固件侧通常为 4096
+actual_uploaded = min(downsampled_points, upload_points)
+```
+
+示例：
+- `downsample_step=1, upload_points=1024` → 上传 1024 点
+- `downsample_step=4, upload_points=2048` → 仍只上传 1024 点（降采样后最多 1024）
+
+Pending 与 ACK（为什么有时看起来不是“立刻生效”）：
+- 前端点击下发后，服务器记录 pending
+- 设备下一次心跳回包才会携带命令字段（设备“拉取”）
+- 设备应用后会在下一次上报带回同名字段作为 ACK，服务器确认一致后清理 pending
+- pending 期间，页面会显示“目标值”（避免波形刷新把输入框覆盖回旧值）
 
 ---
 
@@ -292,7 +328,59 @@ New-NetFirewallRule -DisplayName "EdgeWind-5000" -Direction Inbound -Protocol TC
 注意点：
 - 固件侧是通过 **TCP 透传**拼 HTTP 报文发送到 `POST /api/node/heartbeat`
 - 后端对 `Content-Type` 不严格：即使 header 缺失也会尝试解析 body（见 `_get_json_payload()`）
-- 心跳响应可能包含下发命令（例如 `reset`），固件端会解析后执行
+- 心跳响应可能包含下发命令/参数（例如 `reset`、`report_mode`、`downsample_step`、`upload_points`），固件端会解析后执行/生效
+
+### 6.3 Web/桌面端 → 服务器：参数下发接口（仅登录可用）
+
+实时监测页通过两个接口对“指定 node”下发参数（需要已登录 + CSRF）：
+
+- `POST /api/nodes/downsample_step`
+  - Body：`{"node_id":"...", "step": 1..64}`
+  - 失败：`400`（格式/范围错），`409`（节点不在 full 模式）
+- `POST /api/nodes/upload_points`
+  - Body：`{"node_id":"...", "points": 256..4096 且 256 步进}`
+  - 失败：`400`（格式/步进/范围错），`409`（节点不在 full 模式）
+
+成功响应（两者类似）会返回当前 `report_mode` + 目标值，便于前端同步 UI 状态。
+
+### 6.4 服务器 → 设备：心跳回包下发 + 设备 ACK 清 pending
+
+下发不是“推送”，而是设备心跳时“拉取”：
+
+1) 前端下发后，服务器为该节点记录 pending  
+2) 设备下一次 `POST /api/node/heartbeat` 响应里会携带 `downsample_step` / `upload_points`（仅 pending 存在时才携带）  
+3) 设备应用后，会在下一次上报 JSON 顶层带回 `downsample_step` / `upload_points` 作为 ACK  
+4) 服务器确认上报值与 pending 一致后清理 pending，后续回包不再重复下发
+
+心跳响应示意（字段可能还包含 `reset` 等其它命令）：
+
+```json
+{
+  "success": true,
+  "report_mode": "full",
+  "downsample_step": 4,
+  "upload_points": 1024
+}
+```
+
+### 6.5 固件侧语义、限点上传与 SD 持久化
+
+固件侧新增并持久化了两类“上传侧参数”：
+
+- `downsample_step`：影响波形上传的采样间隔（每 `step` 取 1 点），范围 1..64
+- `upload_points`：影响波形上传的点数上限（降采样后最多 N 点），范围 256..4096 且 256 步进
+
+实际上传点数为：`min(4096/step 对应的降采样点数, upload_points)`（每通道独立）。
+
+收到服务器命令后，设备会输出日志（UI 日志 + 串口日志同源）：
+
+- `[服务器命令] downsample_step=...`
+- `[服务器命令] upload_points=...`
+
+参数会持久化到 SD：`0:/config/ui_param.cfg`，新增键：
+
+- `DOWNSAMPLE_STEP=<int>`
+- `UPLOAD_POINTS=<int>`
 
 ---
 
@@ -407,6 +495,20 @@ Socket.IO 服务在 `app.py` 初始化，事件在 `edgewind/socket_events.py` �
   - `lv_image_header_cache.c`
 - 如果你是仓库维护者：确保根目录 `.gitignore` 不再全局忽略 `instance/`（而是只忽略 `Edge_Wind_System/instance/` 等运行时目录）。
 
+### 10.6 实时监测：输入框在刷新时变回 1/默认值
+
+- 确认你已经更新到最新前端并强制刷新（浏览器 `Ctrl+F5`），且服务端已重启加载新代码
+- 输入框只在 `report_mode === 'full'` 时可用；Summary 模式会禁用并提示先“请求全量”
+- 下发后若设备尚未 ACK，服务端会在 pending 期间返回“目标值”给前端；若仍被覆盖，通常是浏览器缓存了旧版本 `monitor.html` 或服务端仍在跑旧代码
+
+### 10.7 如何确认下发是否生效（downsample_step / upload_points）
+
+1) Web：打开 DevTools → Network，确认 `POST /api/nodes/downsample_step` 或 `POST /api/nodes/upload_points` 返回 `200`，且 `report_mode` 为 `full`  
+2) 回包：抓 `POST /api/node/heartbeat` 响应，pending 期间应包含 `downsample_step` / `upload_points`  
+3) 设备日志：串口/屏幕日志出现 `[服务器命令] downsample_step=...` / `[服务器命令] upload_points=...`  
+4) 设备上报：后续上报 JSON 顶层带回 `downsample_step` / `upload_points`，服务器收到后会清 pending  
+5) SD：`0:/config/ui_param.cfg` 中应出现/更新 `DOWNSAMPLE_STEP=` 与 `UPLOAD_POINTS=`，重启后仍保持
+
 ---
 
 ## 11. 运维与维护（重置密码/清理数据）
@@ -449,4 +551,3 @@ API：
 ## 备注
 
 本仓库为“完整工程归档”，包含上位机、桌面端、固件端；建议你在 GitHub 私有仓库中按 tag 标记每次可交付版本（例如 `v1.4.0-desktop`），方便未来回溯。
-

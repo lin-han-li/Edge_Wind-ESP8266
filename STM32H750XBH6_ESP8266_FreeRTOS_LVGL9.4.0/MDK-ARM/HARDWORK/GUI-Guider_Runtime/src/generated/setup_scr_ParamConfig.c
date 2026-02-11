@@ -234,6 +234,25 @@ void setup_scr_ParamConfig(lv_ui *ui)
     lv_obj_set_style_border_color(ui->ParamConfig_ta_downsample, lv_color_hex(0xCCCCCC), LV_PART_MAIN|LV_STATE_DEFAULT);
     /* events_init_ParamConfig() 里绑定事件 */
 
+    // --- Row 5 (Right): Upload Points ---
+    ui->ParamConfig_lbl_uploadpoints = lv_label_create(ui->ParamConfig_cont_panel);
+    lv_obj_align_to(ui->ParamConfig_lbl_uploadpoints, ui->ParamConfig_ta_downsample, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
+    lv_label_set_text(ui->ParamConfig_lbl_uploadpoints, "Upload Points (降采样后, 256步进)");
+    lv_obj_set_style_text_color(ui->ParamConfig_lbl_uploadpoints, lv_color_hex(0x2F35DA), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_text_font(ui->ParamConfig_lbl_uploadpoints, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+
+    ui->ParamConfig_ta_uploadpoints = lv_textarea_create(ui->ParamConfig_cont_panel);
+    lv_obj_align_to(ui->ParamConfig_ta_uploadpoints, ui->ParamConfig_lbl_uploadpoints, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
+    lv_obj_set_size(ui->ParamConfig_ta_uploadpoints, 320, 32);
+    lv_textarea_set_one_line(ui->ParamConfig_ta_uploadpoints, true);
+    lv_textarea_set_accepted_chars(ui->ParamConfig_ta_uploadpoints, "0123456789");
+    lv_textarea_set_max_length(ui->ParamConfig_ta_uploadpoints, 4);
+    lv_textarea_set_text(ui->ParamConfig_ta_uploadpoints, "4096");
+    lv_obj_set_style_text_font(ui->ParamConfig_ta_uploadpoints, gui_assets_get_font_20(), LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(ui->ParamConfig_ta_uploadpoints, 2, LV_PART_MAIN|LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(ui->ParamConfig_ta_uploadpoints, lv_color_hex(0xCCCCCC), LV_PART_MAIN|LV_STATE_DEFAULT);
+    /* events_init_ParamConfig() 里绑定事件 */
+
     /* Tips / validation area (inside panel)
      * - Show recommended values and warnings to avoid misconfiguration causing reconnect loops.
      */

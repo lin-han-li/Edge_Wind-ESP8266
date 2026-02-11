@@ -211,6 +211,21 @@
                             </button>
                         </li>
                     </ul>
+                    <div class="input-group input-group-sm" style="width: 280px;">
+                        <span class="input-group-text">上传点数</span>
+                        <input
+                            class="form-control"
+                            id="upload-points-input"
+                            type="number"
+                            min="256"
+                            max="4096"
+                            step="256"
+                            value="4096"
+                            aria-label="Upload Points">
+                        <button class="btn btn-outline-light" id="btn-send-upload-points" type="button">
+                            下发
+                        </button>
+                    </div>
                     <div class="btn-group btn-group-sm" role="group" aria-label="Report mode controls">
                         <button class="btn btn-outline-light" id="btn-request-full" type="button">
                             <i class="bi bi-cloud-download"></i> 请求全量
@@ -322,6 +337,9 @@
     let downsampleStepByNode = {};  // {nodeId: 1..64}
     let downsampleDraftByNode = {};  // {nodeId: string}
     let downsampleAppliedNodeId = null;
+    let uploadPointsByNode = {};  // {nodeId: 256..4096 step=256}
+    let uploadPointsDraftByNode = {};  // {nodeId: string}
+    let uploadPointsAppliedNodeId = null;
     let currentReportMode = 'summary';
 
     // ========== 报警阈值（来自系统设置）==========
@@ -341,6 +359,14 @@
     function normalizeDownsampleStep(value) {
         const n = Number.parseInt(value, 10);
         if (Number.isInteger(n) && n >= 1 && n <= 64) {
+            return n;
+        }
+        return null;
+    }
+
+    function normalizeUploadPoints(value) {
+        const n = Number.parseInt(value, 10);
+        if (Number.isInteger(n) && n >= 256 && n <= 4096 && (n % 256) === 0) {
             return n;
         }
         return null;
@@ -389,6 +415,20 @@
         }
     }
 
+    function setUploadPointsControlsEnabled(enabled) {
+        const input = document.getElementById('upload-points-input');
+        const btn = document.getElementById('btn-send-upload-points');
+        const disabled = !enabled;
+        if (input) {
+            input.disabled = disabled;
+            input.title = disabled ? '请先请求全量模式' : '';
+        }
+        if (btn) {
+            btn.disabled = disabled;
+            btn.title = disabled ? '请先请求全量模式' : '';
+        }
+    }
+
     function applyDownsampleForNode(nodeId, options = {}) {
         const { force = false, fallbackToDefault = false } = options;
         const input = document.getElementById('downsample-step-input');
@@ -410,23 +450,51 @@
         }
     }
 
+    function applyUploadPointsForNode(nodeId, options = {}) {
+        const { force = false, fallbackToDefault = false } = options;
+        const input = document.getElementById('upload-points-input');
+        if (!input) return;
+        if (!force && document.activeElement === input) return;
+
+        const v = normalizeUploadPoints(uploadPointsByNode[nodeId]);
+        if (v !== null) {
+            input.value = String(v);
+            return;
+        }
+        const draft = nodeId ? uploadPointsDraftByNode[nodeId] : undefined;
+        if (typeof draft === 'string' && draft.length > 0) {
+            input.value = draft;
+            return;
+        }
+        if (fallbackToDefault) {
+            input.value = '4096';
+        }
+    }
+
     function applyReportModeForNode(nodeId) {
         if (!nodeId) {
             currentReportMode = 'summary';
             setReportModeButtonState(currentReportMode);
             setReportModeButtonsEnabled(false);
+            setUploadPointsControlsEnabled(false);
             setDownsampleControlsEnabled(false);
+            applyUploadPointsForNode(nodeId, { force: true, fallbackToDefault: true });
             applyDownsampleForNode(nodeId, { force: true, fallbackToDefault: true });
             downsampleAppliedNodeId = null;
+            uploadPointsAppliedNodeId = null;
             return;
         }
         const switchedNode = downsampleAppliedNodeId !== nodeId;
+        const switchedUpload = uploadPointsAppliedNodeId !== nodeId;
         currentReportMode = reportModeByNode[nodeId] || 'summary';
         setReportModeButtonState(currentReportMode);
         setReportModeButtonsEnabled(true);
+        setUploadPointsControlsEnabled(currentReportMode === 'full');
         setDownsampleControlsEnabled(currentReportMode === 'full');
+        applyUploadPointsForNode(nodeId, { force: switchedUpload, fallbackToDefault: switchedUpload });
         applyDownsampleForNode(nodeId, { force: switchedNode, fallbackToDefault: switchedNode });
         downsampleAppliedNodeId = nodeId;
+        uploadPointsAppliedNodeId = nodeId;
     }
 
     async function requestReportMode(mode) {
@@ -542,6 +610,75 @@
             }
         } catch (e) {
             console.error('[requestDownsampleStep] 失败:', e);
+            if (typeof window.showToast === 'function') {
+                window.showToast(String(e?.message || '下发失败，请稍后重试'), 'error');
+            }
+        }
+    }
+
+    async function requestUploadPoints() {
+        if (!currentNodeId) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先选择一个边缘节点', 'warning');
+            }
+            return;
+        }
+        if (currentReportMode !== 'full') {
+            if (typeof window.showToast === 'function') {
+                window.showToast('请先切换到全量模式后再下发上传点数', 'warning');
+            }
+            return;
+        }
+
+        const input = document.getElementById('upload-points-input');
+        if (!input) return;
+        const points = normalizeUploadPoints(input.value);
+        if (points === null) {
+            if (typeof window.showToast === 'function') {
+                window.showToast('上传点数应为 256~4096 且 256 步进', 'warning');
+            }
+            return;
+        }
+
+        try {
+            const csrfToken = getCsrfToken();
+            const resp = await fetch('/api/nodes/upload_points', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {})
+                },
+                body: JSON.stringify({ node_id: currentNodeId, points })
+            });
+
+            if (!resp.ok) {
+                if (resp.status === 401) {
+                    const next = encodeURIComponent(window.location.pathname + window.location.search);
+                    window.location.href = `/login?next=${next}`;
+                    return;
+                }
+                const errorData = await resp.json().catch(() => ({}));
+                if (resp.status === 409 && errorData?.report_mode) {
+                    reportModeByNode[currentNodeId] = String(errorData.report_mode).toLowerCase();
+                    applyReportModeForNode(currentNodeId);
+                }
+                throw new Error(errorData.error || `HTTP ${resp.status}`);
+            }
+
+            const data = await resp.json();
+            if (!data.success) {
+                throw new Error(data.error || '请求失败');
+            }
+
+            const newPoints = normalizeUploadPoints(data.upload_points ?? points) ?? points;
+            uploadPointsByNode[currentNodeId] = newPoints;
+            uploadPointsDraftByNode[currentNodeId] = String(newPoints);
+            applyUploadPointsForNode(currentNodeId, { force: true });
+            if (typeof window.showToast === 'function') {
+                window.showToast(`已下发上传点数 N=${newPoints}`, 'success');
+            }
+        } catch (e) {
+            console.error('[requestUploadPoints] 失败:', e);
             if (typeof window.showToast === 'function') {
                 window.showToast(String(e?.message || '下发失败，请稍后重试'), 'error');
             }
@@ -779,6 +916,7 @@
         // 绑定上报请求按钮
         const btnFull = document.getElementById('btn-request-full');
         const btnSummary = document.getElementById('btn-request-summary');
+        const btnSendUploadPoints = document.getElementById('btn-send-upload-points');
         const btnSendDownsample = document.getElementById('btn-send-downsample');
         if (btnFull) {
             btnFull.addEventListener('click', () => requestReportMode('full'));
@@ -786,8 +924,25 @@
         if (btnSummary) {
             btnSummary.addEventListener('click', () => requestReportMode('summary'));
         }
+        if (btnSendUploadPoints) {
+            btnSendUploadPoints.addEventListener('click', requestUploadPoints);
+        }
         if (btnSendDownsample) {
             btnSendDownsample.addEventListener('click', requestDownsampleStep);
+        }
+        const uploadPointsInput = document.getElementById('upload-points-input');
+        if (uploadPointsInput) {
+            uploadPointsInput.addEventListener('input', () => {
+                if (currentNodeId) {
+                    uploadPointsDraftByNode[currentNodeId] = uploadPointsInput.value;
+                }
+            });
+            uploadPointsInput.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.isComposing) {
+                    event.preventDefault();
+                    requestUploadPoints();
+                }
+            });
         }
         const downsampleInput = document.getElementById('downsample-step-input');
         if (downsampleInput) {
@@ -805,6 +960,7 @@
         }
         setReportModeButtonState('summary');
         setReportModeButtonsEnabled(false);
+        setUploadPointsControlsEnabled(false);
         setDownsampleControlsEnabled(false);
 
         // 处理URL参数（全局搜索跳转）
@@ -1076,6 +1232,11 @@
                 if (ds !== null) {
                     newConfigs[nodeId].downsample_step = ds;
                     downsampleStepByNode[nodeId] = ds;
+                }
+                const up = normalizeUploadPoints(node.upload_points);
+                if (up !== null) {
+                    newConfigs[nodeId].upload_points = up;
+                    uploadPointsByNode[nodeId] = up;
                 }
             });
             
@@ -2116,6 +2277,11 @@
                             NODE_CONFIGS[node.node_id].downsample_step = ds;
                             downsampleStepByNode[node.node_id] = ds;
                         }
+                        const up = normalizeUploadPoints(node.upload_points);
+                        if (up !== null) {
+                            NODE_CONFIGS[node.node_id].upload_points = up;
+                            uploadPointsByNode[node.node_id] = up;
+                        }
                     }
                     // 关键修复：初始化故障历史记录，避免误触发弹窗
                     nodeFaultHistory[node.node_id] = node.fault_code || 'E00';
@@ -2151,6 +2317,11 @@
                     NODE_CONFIGS[nodeId].downsample_step = createdStep;
                     downsampleStepByNode[nodeId] = createdStep;
                 }
+                const createdPoints = normalizeUploadPoints(msg.upload_points);
+                if (createdPoints !== null) {
+                    NODE_CONFIGS[nodeId].upload_points = createdPoints;
+                    uploadPointsByNode[nodeId] = createdPoints;
+                }
                 renderNodeList();
             } else {
                 NODE_CONFIGS[nodeId].status = msg.status;
@@ -2163,6 +2334,11 @@
                     NODE_CONFIGS[nodeId].downsample_step = updateStep;
                     downsampleStepByNode[nodeId] = updateStep;
                 }
+                const updatePoints = normalizeUploadPoints(msg.upload_points);
+                if (updatePoints !== null) {
+                    NODE_CONFIGS[nodeId].upload_points = updatePoints;
+                    uploadPointsByNode[nodeId] = updatePoints;
+                }
             }
 
             if (msg.report_mode) {
@@ -2173,6 +2349,9 @@
             }
             if (currentNodeId === nodeId && normalizeDownsampleStep(msg.downsample_step) !== null) {
                 applyDownsampleForNode(nodeId);
+            }
+            if (currentNodeId === nodeId && normalizeUploadPoints(msg.upload_points) !== null) {
+                applyUploadPointsForNode(nodeId);
             }
             
             // ========== 系统故障日志（全局）：对所有节点的故障码变化进行记录 ==========

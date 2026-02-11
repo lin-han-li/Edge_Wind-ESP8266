@@ -104,6 +104,7 @@ typedef struct
     uint32_t http_timeout_ms;   /* 回包超时 ms（用于 HTTP 门控超时放行） */
     uint32_t hardreset_sec;     /* 无响应复位阈值 s */
     uint32_t wave_step;         /* 波形降采样步进：1=全量，4=每4点取1点 */
+    uint32_t upload_points;     /* 降采样后的最多上传点数：256..4096 且 256 步进 */
     uint32_t chunk_kb;          /* 分段发送：每段 KB（0=关闭分段） */
     uint32_t chunk_delay_ms;    /* 分段发送：每段后延时 ms */
 } ESP_CommParams_t;
@@ -121,6 +122,7 @@ uint32_t ESP_CommParams_MinIntervalMs(void);
 uint32_t ESP_CommParams_HttpTimeoutMs(void);
 uint32_t ESP_CommParams_HardResetSec(void);
 uint32_t ESP_CommParams_WaveStep(void);
+uint32_t ESP_CommParams_UploadPoints(void);
 uint32_t ESP_CommParams_ChunkKb(void);
 uint32_t ESP_CommParams_ChunkDelayMs(void);
 

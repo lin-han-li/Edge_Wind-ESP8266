@@ -42,6 +42,7 @@ active_nodes = {}  # 将在app.py中初始化并传入
 node_commands = {}  # 将在app.py中初始化并传入
 node_report_modes = {}  # {node_id: 'summary'|'full'}
 node_downsample_commands = {}  # {node_id: int(1..64)}
+node_upload_points_commands = {}  # {node_id: int(256..4096, step=256)}
 DEFAULT_REPORT_MODE = 'summary'
 
 # 节点超时时间（秒）
@@ -227,14 +228,15 @@ def _lighten_channels(channels):
         })
     return out
 
-def init_api_blueprint(app, socketio, executor, nodes, commands, report_modes, downsample_commands):
+def init_api_blueprint(app, socketio, executor, nodes, commands, report_modes, downsample_commands, upload_points_commands):
     """初始化API蓝图的全局变量"""
-    global active_nodes, node_commands, node_report_modes, node_downsample_commands
+    global active_nodes, node_commands, node_report_modes, node_downsample_commands, node_upload_points_commands
     global db_executor, socketio_instance, app_instance
     active_nodes = nodes
     node_commands = commands
     node_report_modes = report_modes
     node_downsample_commands = downsample_commands
+    node_upload_points_commands = upload_points_commands
     db_executor = executor
     socketio_instance = socketio
     app_instance = app
@@ -291,15 +293,84 @@ def _ack_downsample_command(node_id: str, payload: dict) -> int | None:
     if not node_id or not isinstance(payload, dict):
         return None
 
+    pending = node_downsample_commands.get(node_id)
     reported_step = _parse_downsample_step(payload.get('downsample_step'))
     if reported_step is None:
+        # 设备没上报时，用 pending 目标值回填（避免 UI 每次刷新回退到默认值）。
+        if pending is not None:
+            _sync_active_node_downsample_step(node_id, int(pending))
         return None
 
+    # 若存在 pending 且设备仍在上报旧值，则 UI 保持显示“目标值”，直到 ACK。
+    if pending is not None and int(pending) != reported_step:
+        _sync_active_node_downsample_step(node_id, int(pending))
+        return reported_step
+
     _sync_active_node_downsample_step(node_id, reported_step)
-    pending = node_downsample_commands.get(node_id)
     if pending is not None and int(pending) == reported_step:
         node_downsample_commands.pop(node_id, None)
     return reported_step
+
+
+def _parse_upload_points(value) -> int | None:
+    """解析并校验 upload_points（仅接受 256..4096 且 256 步进的整数）。"""
+    if value is None or isinstance(value, bool):
+        return None
+
+    points = None
+    if isinstance(value, int):
+        points = value
+    elif isinstance(value, float):
+        if not value.is_integer():
+            return None
+        points = int(value)
+    else:
+        raw = str(value).strip()
+        if not raw or not raw.isdigit():
+            return None
+        points = int(raw)
+
+    if 256 <= points <= 4096 and (points % 256) == 0:
+        return points
+    return None
+
+
+def _sync_active_node_upload_points(node_id: str, points: int) -> None:
+    """把当前 upload_points 同步到 active_nodes 的轻量数据。"""
+    if not node_id:
+        return
+    try:
+        if node_id in active_nodes:
+            active_nodes[node_id].setdefault('data', {})
+            active_nodes[node_id]['data']['upload_points'] = int(points)
+    except Exception:
+        pass
+
+
+def _ack_upload_points_command(node_id: str, payload: dict) -> int | None:
+    """
+    设备上报 upload_points 时做 ACK：
+    - 更新 active_nodes 中的当前值/目标值
+    - 若与 pending 命令一致则清除 pending
+    """
+    if not node_id or not isinstance(payload, dict):
+        return None
+
+    pending = node_upload_points_commands.get(node_id)
+    reported = _parse_upload_points(payload.get('upload_points'))
+    if reported is None:
+        if pending is not None:
+            _sync_active_node_upload_points(node_id, int(pending))
+        return None
+
+    if pending is not None and int(pending) != reported:
+        _sync_active_node_upload_points(node_id, int(pending))
+        return reported
+
+    _sync_active_node_upload_points(node_id, reported)
+    if pending is not None and int(pending) == reported:
+        node_upload_points_commands.pop(node_id, None)
+    return reported
 
 
 def _device_auth_or_401():
@@ -381,6 +452,9 @@ def register_device():
                 ds = _parse_downsample_step(data.get('downsample_step'))
                 if ds is not None:
                     active_nodes[device_id]['data']['downsample_step'] = ds
+                up = _parse_upload_points(data.get('upload_points'))
+                if up is not None:
+                    active_nodes[device_id]['data']['upload_points'] = up
             except Exception:
                 pass
             # WebSocket：通知前端立即刷新节点列表
@@ -395,6 +469,7 @@ def register_device():
                         'timestamp': time.time(),
                         'report_mode': _get_report_mode(device_id),
                         'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
+                        'upload_points': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('upload_points'),
                         'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
                     }, namespace='/')
             except Exception:
@@ -432,6 +507,9 @@ def register_device():
                 ds = _parse_downsample_step(data.get('downsample_step'))
                 if ds is not None:
                     active_nodes[device_id]['data']['downsample_step'] = ds
+                up = _parse_upload_points(data.get('upload_points'))
+                if up is not None:
+                    active_nodes[device_id]['data']['upload_points'] = up
             except Exception:
                 pass
             # WebSocket：通知前端立即刷新节点列表
@@ -445,6 +523,7 @@ def register_device():
                         'timestamp': time.time(),
                         'report_mode': _get_report_mode(device_id),
                         'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
+                        'upload_points': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('upload_points'),
                         'metrics': {'voltage': 0, 'voltage_neg': 0, 'current': 0, 'leakage': 0}
                     }, namespace='/')
             except Exception:
@@ -529,6 +608,11 @@ def upload_data():
             pending_step = node_downsample_commands.get(device_id)
             if pending_step is not None:
                 _sync_active_node_downsample_step(device_id, int(pending_step))
+        reported_upload_points = _ack_upload_points_command(device_id, data)
+        if reported_upload_points is None:
+            pending_points = node_upload_points_commands.get(device_id)
+            if pending_points is not None:
+                _sync_active_node_upload_points(device_id, int(pending_points))
 
         # 3) 保存波形数据点（用于历史趋势/后续分析）
         # 性能说明：多节点高频上报时，频繁落库会显著拖慢响应。
@@ -582,6 +666,7 @@ def upload_data():
                     'timestamp': current_timestamp,
                     'report_mode': _get_report_mode(device_id),
                     'downsample_step': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('downsample_step'),
+                    'upload_points': (active_nodes.get(device_id, {}).get('data', {}) or {}).get('upload_points'),
                     'metrics': {
                         'voltage': float((data or {}).get('voltage', 0) or 0),
                         'voltage_neg': float((data or {}).get('voltage_neg', 0) or 0),
@@ -607,6 +692,9 @@ def upload_data():
         pending_step = node_downsample_commands.get(device_id)
         if pending_step is not None:
             resp['downsample_step'] = int(pending_step)
+        pending_points = node_upload_points_commands.get(device_id)
+        if pending_points is not None:
+            resp['upload_points'] = int(pending_points)
         return jsonify(resp), 200
 
     except Exception as e:
@@ -672,6 +760,11 @@ def node_heartbeat():
             pending_step = node_downsample_commands.get(node_id)
             if pending_step is not None:
                 _sync_active_node_downsample_step(node_id, int(pending_step))
+        reported_upload_points = _ack_upload_points_command(node_id, data)
+        if reported_upload_points is None:
+            pending_points = node_upload_points_commands.get(node_id)
+            if pending_points is not None:
+                _sync_active_node_upload_points(node_id, int(pending_points))
 
         # 2. Initialize Data Structure
         processed_data = {
@@ -879,6 +972,7 @@ def node_heartbeat():
                 'timestamp': current_timestamp,
                 'report_mode': _get_report_mode(node_id),
                 'downsample_step': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('downsample_step'),
+                'upload_points': (active_nodes.get(node_id, {}).get('data', {}) or {}).get('upload_points'),
                 'metrics': {
                     'voltage': processed_data.get('voltage', 0),
                     'voltage_neg': processed_data.get('voltage_neg', 0),
@@ -919,6 +1013,9 @@ def node_heartbeat():
         pending_step = node_downsample_commands.get(node_id)
         if pending_step is not None:
             response_payload['downsample_step'] = int(pending_step)
+        pending_points = node_upload_points_commands.get(node_id)
+        if pending_points is not None:
+            response_payload['upload_points'] = int(pending_points)
         
         # 9. 节流更新数据库设备心跳（避免 50Hz 高频心跳把 SQLite 打爆）
         last_db = _last_db_heartbeat_ts.get(node_id, 0)
@@ -1040,6 +1137,13 @@ def get_active_nodes():
                 pending_step = node_downsample_commands.get(node_id)
                 if pending_step is not None:
                     node_data['downsample_step'] = int(pending_step)
+            parsed_points = _parse_upload_points(node_data.get('upload_points'))
+            if parsed_points is not None:
+                node_data['upload_points'] = parsed_points
+            if 'upload_points' not in node_data:
+                pending_points = node_upload_points_commands.get(node_id)
+                if pending_points is not None:
+                    node_data['upload_points'] = int(pending_points)
             active_nodes_list.append(node_data)
         
         return jsonify({
@@ -1087,6 +1191,11 @@ def set_node_report_mode():
                     pending_step = node_downsample_commands.get(node_id)
                     if pending_step is not None:
                         downsample_step = int(pending_step)
+                upload_points = ((node_info.get('data', {}) or {}).get('upload_points'))
+                if upload_points is None:
+                    pending_points = node_upload_points_commands.get(node_id)
+                    if pending_points is not None:
+                        upload_points = int(pending_points)
                 socketio_instance.emit('node_status_update', {
                     'node_id': node_id,
                     'status': node_info.get('status', 'online'),
@@ -1094,6 +1203,7 @@ def set_node_report_mode():
                     'timestamp': time.time(),
                     'report_mode': mode,
                     'downsample_step': downsample_step,
+                    'upload_points': upload_points,
                 }, namespace='/')
         except Exception:
             pass
@@ -1135,6 +1245,11 @@ def set_node_downsample_step():
         try:
             if socketio_instance:
                 node_info = active_nodes.get(node_id) or {}
+                upload_points = ((node_info.get('data', {}) or {}).get('upload_points'))
+                if upload_points is None:
+                    pending_points = node_upload_points_commands.get(node_id)
+                    if pending_points is not None:
+                        upload_points = int(pending_points)
                 socketio_instance.emit('node_status_update', {
                     'node_id': node_id,
                     'status': node_info.get('status', 'online'),
@@ -1142,6 +1257,7 @@ def set_node_downsample_step():
                     'timestamp': time.time(),
                     'report_mode': mode,
                     'downsample_step': int(step),
+                    'upload_points': upload_points,
                 }, namespace='/')
         except Exception:
             pass
@@ -1155,6 +1271,65 @@ def set_node_downsample_step():
 
     except Exception as e:
         logger.exception(f"[/api/nodes/downsample_step] 失败: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@api_bp.route('/nodes/upload_points', methods=['POST'])
+@login_required
+def set_node_upload_points():
+    """设置节点上传点数（降采样后的最大上传点数，仅 full 模式允许）。"""
+    try:
+        payload = request.get_json() or {}
+        node_id = _normalize_node_id(payload.get('node_id') or payload.get('device_id'))
+        points = _parse_upload_points(payload.get('points'))
+
+        if not node_id:
+            return jsonify({'success': False, 'error': 'Missing node_id'}), 400
+        if len(node_id) > 100:
+            return jsonify({'success': False, 'error': 'node_id too long (max 100)'}), 400
+        if points is None:
+            return jsonify({'success': False, 'error': 'Invalid points (expected 256..4096 and step=256)'}), 400
+
+        mode = _get_report_mode(node_id)
+        if mode != 'full':
+            return jsonify({
+                'success': False,
+                'error': 'Upload points can be changed only in full report mode',
+                'report_mode': mode,
+            }), 409
+
+        node_upload_points_commands[node_id] = int(points)
+        _sync_active_node_upload_points(node_id, int(points))
+
+        try:
+            if socketio_instance:
+                node_info = active_nodes.get(node_id) or {}
+                downsample_step = ((node_info.get('data', {}) or {}).get('downsample_step'))
+                if downsample_step is None:
+                    pending_step = node_downsample_commands.get(node_id)
+                    if pending_step is not None:
+                        downsample_step = int(pending_step)
+                socketio_instance.emit('node_status_update', {
+                    'node_id': node_id,
+                    'status': node_info.get('status', 'online'),
+                    'fault_code': node_info.get('fault_code', 'E00'),
+                    'timestamp': time.time(),
+                    'report_mode': mode,
+                    'downsample_step': downsample_step,
+                    'upload_points': int(points),
+                }, namespace='/')
+        except Exception:
+            pass
+
+        return jsonify({
+            'success': True,
+            'node_id': node_id,
+            'upload_points': int(points),
+            'report_mode': mode,
+        }), 200
+
+    except Exception as e:
+        logger.exception(f"[/api/nodes/upload_points] 失败: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

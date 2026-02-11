@@ -1153,22 +1153,24 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
     const char *http_s  = (ui->ParamConfig_ta_httptimeout) ? lv_textarea_get_text(ui->ParamConfig_ta_httptimeout) : "";
     const char *rst_s   = (ui->ParamConfig_ta_hardreset)   ? lv_textarea_get_text(ui->ParamConfig_ta_hardreset)   : "";
     const char *ds_s    = (ui->ParamConfig_ta_downsample)  ? lv_textarea_get_text(ui->ParamConfig_ta_downsample)  : "";
+    const char *up_s    = (ui->ParamConfig_ta_uploadpoints) ? lv_textarea_get_text(ui->ParamConfig_ta_uploadpoints) : "";
     const char *ckb_s   = (ui->ParamConfig_ta_chunkkb)     ? lv_textarea_get_text(ui->ParamConfig_ta_chunkkb)     : "";
     const char *cdly_s  = (ui->ParamConfig_ta_chunkdelay)  ? lv_textarea_get_text(ui->ParamConfig_ta_chunkdelay)  : "";
 
-    uint32_t hb=0, send=0, http=0, rst=0, ds=1, ckb=0, cdly=0;
+    uint32_t hb=0, send=0, http=0, rst=0, ds=1, up=4096, ckb=0, cdly=0;
     bool ok_hb   = ui_param_cfg_parse_u32(hb_s, &hb);
     bool ok_send = ui_param_cfg_parse_u32(send_s, &send);
     bool ok_http = ui_param_cfg_parse_u32(http_s, &http);
     bool ok_rst  = ui_param_cfg_parse_u32(rst_s, &rst);
     bool ok_ds   = ui_param_cfg_parse_u32(ds_s, &ds);
+    bool ok_up   = ui_param_cfg_parse_u32(up_s, &up);
     bool ok_ckb  = ui_param_cfg_parse_u32(ckb_s, &ckb);
     bool ok_cdly = ui_param_cfg_parse_u32(cdly_s, &cdly);
 
-    if (!ok_hb || !ok_send || !ok_http || !ok_rst || !ok_ds || !ok_ckb || !ok_cdly) {
+    if (!ok_hb || !ok_send || !ok_http || !ok_rst || !ok_ds || !ok_up || !ok_ckb || !ok_cdly) {
         ui_param_cfg_set_tips(ui,
                               "提示：请输入纯数字。\n"
-                              "建议值：心跳5000ms，限频200ms，回包1200ms，复位60s，降采样step=4，分段4KB/10ms",
+                              "建议值：心跳5000ms，限频200ms，回包1200ms，复位60s，降采样step=4，上传点数4096，分段4KB/10ms",
                               0xFFA500);
         return !strict;
     }
@@ -1176,9 +1178,12 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
     /* 动态信息：step 对应发送点数（4096/step，与当前采样点数一致） */
     uint32_t pts = 0;
     if (ds >= 1u) {
-        pts = 4096u / ds;
+        /* ceil(4096/ds) = (4096 + ds - 1) / ds */
+        pts = (4096u + ds - 1u) / ds;
         if (pts == 0u) pts = 1u;
     }
+    uint32_t actual_up = pts;
+    if (up < actual_up) actual_up = up;
     char chunk_info[32];
     if (ckb == 0u) {
         (void)snprintf(chunk_info, sizeof(chunk_info), "关闭(单包)");
@@ -1206,6 +1211,10 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
     }
     if (ds < 1u || ds > 64u) {
         ui_param_cfg_set_tips(ui, "错误：降采样 step 建议范围 1..64（例如 1=全量，4=推荐）", 0xFF4444);
+        return !strict;
+    }
+    if (up < 256u || up > 4096u || (up % 256u) != 0u) {
+        ui_param_cfg_set_tips(ui, "错误：上传点数需为 256..4096 且 256 步进（例如 1024/2048/4096）", 0xFF4444);
         return !strict;
     }
     if (ckb > 16u) {
@@ -1240,9 +1249,11 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         (void)snprintf(tips, sizeof(tips),
                        "警告：限频过小会提高带宽/CPU/串口压力，可能导致掉帧或丢包。\n"
                        "降采样：step=%lu -> points=%lu (4096/step)\n"
+                       "上传点数：%lu -> 实际上传=%lu\n"
                        "分段：%s\n"
                        "建议：限频≥50ms（推荐200ms）。",
                        (unsigned long)ds, (unsigned long)pts,
+                       (unsigned long)up, (unsigned long)actual_up,
                        chunk_info);
         ui_param_cfg_set_tips(ui, tips, 0xFFA500);
         return true;
@@ -1253,9 +1264,11 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         (void)snprintf(tips, sizeof(tips),
                        "警告：降采样 step 过大可能导致波形细节丢失。\n"
                        "当前：step=%lu -> points=%lu (4096/step)\n"
+                       "上传点数：%lu -> 实际上传=%lu\n"
                        "分段：%s\n"
                        "建议：step=4 或 8（1=全量）。",
                        (unsigned long)ds, (unsigned long)pts,
+                       (unsigned long)up, (unsigned long)actual_up,
                        chunk_info);
         ui_param_cfg_set_tips(ui, tips, 0xFFA500);
         return true;
@@ -1267,9 +1280,11 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
         (void)snprintf(tips, sizeof(tips),
                        "参数看起来合理。\n"
                        "降采样：step=%lu -> points=%lu (4096/step)\n"
+                       "上传点数：%lu -> 实际上传=%lu\n"
                        "分段：%s\n"
                        "建议：step=4，分段4KB/10ms（可一键关闭分段）",
                        (unsigned long)ds, (unsigned long)pts,
+                       (unsigned long)up, (unsigned long)actual_up,
                        chunk_info);
         ui_param_cfg_set_tips(ui, tips, 0x111111);
     }
@@ -1278,7 +1293,7 @@ static bool ui_param_cfg_validate_and_warn(lv_ui *ui, bool strict)
 
 static void ui_param_cfg_apply_to_ui(lv_ui *ui, const char *heartbeat_ms, const char *sendlimit_ms,
                                      const char *http_timeout_ms, const char *hardreset_s,
-                                     const char *downsample_step,
+                                     const char *downsample_step, const char *upload_points,
                                      const char *chunk_kb, const char *chunk_delay)
 {
     if (!ui) return;
@@ -1292,6 +1307,8 @@ static void ui_param_cfg_apply_to_ui(lv_ui *ui, const char *heartbeat_ms, const 
         lv_textarea_set_text(ui->ParamConfig_ta_hardreset, hardreset_s ? hardreset_s : "");
     if (ui->ParamConfig_ta_downsample && lv_obj_is_valid(ui->ParamConfig_ta_downsample))
         lv_textarea_set_text(ui->ParamConfig_ta_downsample, downsample_step ? downsample_step : "");
+    if (ui->ParamConfig_ta_uploadpoints && lv_obj_is_valid(ui->ParamConfig_ta_uploadpoints))
+        lv_textarea_set_text(ui->ParamConfig_ta_uploadpoints, upload_points ? upload_points : "");
     if (ui->ParamConfig_ta_chunkkb && lv_obj_is_valid(ui->ParamConfig_ta_chunkkb))
         lv_textarea_set_text(ui->ParamConfig_ta_chunkkb, chunk_kb ? chunk_kb : "");
     if (ui->ParamConfig_ta_chunkdelay && lv_obj_is_valid(ui->ParamConfig_ta_chunkdelay))
@@ -1303,12 +1320,14 @@ static FRESULT ui_param_cfg_read_file(char *heartbeat_ms, size_t heartbeat_len,
                                       char *http_timeout_ms, size_t http_timeout_len,
                                       char *hardreset_s, size_t hardreset_len,
                                       char *downsample_step, size_t downsample_len,
+                                      char *upload_points, size_t upload_points_len,
                                       char *chunk_kb, size_t chunk_kb_len,
                                       char *chunk_delay, size_t chunk_delay_len)
 {
-    if (!heartbeat_ms || !sendlimit_ms || !http_timeout_ms || !hardreset_s || !downsample_step || !chunk_kb || !chunk_delay)
+    if (!heartbeat_ms || !sendlimit_ms || !http_timeout_ms || !hardreset_s || !downsample_step || !upload_points || !chunk_kb || !chunk_delay)
         return FR_INVALID_OBJECT;
     heartbeat_ms[0] = sendlimit_ms[0] = http_timeout_ms[0] = hardreset_s[0] = downsample_step[0] = '\0';
+    upload_points[0] = '\0';
     chunk_kb[0] = chunk_delay[0] = '\0';
 
     FRESULT res = ui_sd_mount_with_mkfs();
@@ -1351,6 +1370,9 @@ static FRESULT ui_param_cfg_read_file(char *heartbeat_ms, size_t heartbeat_len,
         } else if (strncmp(line, "DOWNSAMPLE_STEP=", 16) == 0) {
             strncpy(downsample_step, line + 16, downsample_len - 1);
             downsample_step[downsample_len - 1] = '\0';
+        } else if (strncmp(line, "UPLOAD_POINTS=", 14) == 0) {
+            strncpy(upload_points, line + 14, upload_points_len - 1);
+            upload_points[upload_points_len - 1] = '\0';
         } else if (strncmp(line, "CHUNK_KB=", 9) == 0) {
             strncpy(chunk_kb, line + 9, chunk_kb_len - 1);
             chunk_kb[chunk_kb_len - 1] = '\0';
@@ -1361,14 +1383,14 @@ static FRESULT ui_param_cfg_read_file(char *heartbeat_ms, size_t heartbeat_len,
     }
     (void)f_close(&fil);
 
-    printf("[PARAM_UI_CFG] loaded: hb=%s send=%s http=%s reset=%s ds=%s chunk=%s delay=%s\r\n",
-           heartbeat_ms, sendlimit_ms, http_timeout_ms, hardreset_s, downsample_step, chunk_kb, chunk_delay);
+    printf("[PARAM_UI_CFG] loaded: hb=%s send=%s http=%s reset=%s ds=%s up=%s chunk=%s delay=%s\r\n",
+           heartbeat_ms, sendlimit_ms, http_timeout_ms, hardreset_s, downsample_step, upload_points, chunk_kb, chunk_delay);
     return FR_OK;
 }
 
 static FRESULT ui_param_cfg_write_file(const char *heartbeat_ms, const char *sendlimit_ms,
                                        const char *http_timeout_ms, const char *hardreset_s,
-                                       const char *downsample_step,
+                                       const char *downsample_step, const char *upload_points,
                                        const char *chunk_kb, const char *chunk_delay)
 {
     printf("[PARAM_UI_CFG] write_file: start\r\n");
@@ -1412,23 +1434,32 @@ static FRESULT ui_param_cfg_write_file(const char *heartbeat_ms, const char *sen
     printf("[PARAM_UI_CFG] write_file: writing...\r\n");
     char buf[320];
     /* 只写入纯数字，避免出现 HARDRESET_S==60 这种“脏文件” */
-    uint32_t hb_u = 0, send_u = 0, http_u = 0, rst_u = 0, ds_u = 1, ckb_u = 4, cdly_u = 10;
+    uint32_t hb_u = 0, send_u = 0, http_u = 0, rst_u = 0, ds_u = 1, up_u = 4096, ckb_u = 4, cdly_u = 10;
     (void)ui_param_cfg_parse_u32(heartbeat_ms, &hb_u);
     (void)ui_param_cfg_parse_u32(sendlimit_ms, &send_u);
     (void)ui_param_cfg_parse_u32(http_timeout_ms, &http_u);
     (void)ui_param_cfg_parse_u32(hardreset_s, &rst_u);
     (void)ui_param_cfg_parse_u32(downsample_step, &ds_u);
+    (void)ui_param_cfg_parse_u32(upload_points, &up_u);
     (void)ui_param_cfg_parse_u32(chunk_kb, &ckb_u);
     (void)ui_param_cfg_parse_u32(chunk_delay, &cdly_u);
     if (ds_u < 1u) ds_u = 1u;
+    /* upload_points：256..4096 且 256 步进（validate 已保证，这里做兜底夹逼） */
+    if (up_u < 256u) up_u = 256u;
+    if (up_u > 4096u) up_u = 4096u;
+    if ((up_u % 256u) != 0u) {
+        up_u = (up_u / 256u) * 256u;
+        if (up_u < 256u) up_u = 256u;
+    }
     /* 允许 ckb=0 表示关闭分段 */
     int n = snprintf(buf, sizeof(buf),
-                     "HEARTBEAT_MS=%lu\nSENDLIMIT_MS=%lu\nHTTP_TIMEOUT_MS=%lu\nHARDRESET_S=%lu\nDOWNSAMPLE_STEP=%lu\nCHUNK_KB=%lu\nCHUNK_DELAY_MS=%lu\n",
+                     "HEARTBEAT_MS=%lu\nSENDLIMIT_MS=%lu\nHTTP_TIMEOUT_MS=%lu\nHARDRESET_S=%lu\nDOWNSAMPLE_STEP=%lu\nUPLOAD_POINTS=%lu\nCHUNK_KB=%lu\nCHUNK_DELAY_MS=%lu\n",
                      (unsigned long)hb_u,
                      (unsigned long)send_u,
                      (unsigned long)http_u,
                      (unsigned long)rst_u,
                      (unsigned long)ds_u,
+                     (unsigned long)up_u,
                      (unsigned long)ckb_u,
                      (unsigned long)cdly_u);
     UINT bw = 0;
@@ -1487,17 +1518,18 @@ static FRESULT ui_param_cfg_write_file(const char *heartbeat_ms, const char *sen
 static void ui_param_cfg_do_load_sync(lv_ui *ui)
 {
     if (!ui) return;
-    char hb[24] = {0}, send[24] = {0}, http[24] = {0}, reset[24] = {0}, ds[24] = {0}, ckb[24] = {0}, cdly[24] = {0};
+    char hb[24] = {0}, send[24] = {0}, http[24] = {0}, reset[24] = {0}, ds[24] = {0}, up[24] = {0}, ckb[24] = {0}, cdly[24] = {0};
     FRESULT res = ui_param_cfg_read_file(hb, sizeof(hb), send, sizeof(send), http, sizeof(http), reset, sizeof(reset),
-                                         ds, sizeof(ds), ckb, sizeof(ckb), cdly, sizeof(cdly));
+                                         ds, sizeof(ds), up, sizeof(up), ckb, sizeof(ckb), cdly, sizeof(cdly));
     if (res == FR_OK) {
         /* 读取时就“净化”一次：把 =60 / ==60 之类的值纠正为纯数字回写到输入框 */
-        uint32_t hb_u = 0, send_u = 0, http_u = 0, rst_u = 0, ds_u = 1, ckb_u = 4, cdly_u = 10;
+        uint32_t hb_u = 0, send_u = 0, http_u = 0, rst_u = 0, ds_u = 1, up_u = 4096, ckb_u = 4, cdly_u = 10;
         bool ok_hb = ui_param_cfg_parse_u32(hb, &hb_u);
         bool ok_send = ui_param_cfg_parse_u32(send, &send_u);
         bool ok_http = ui_param_cfg_parse_u32(http, &http_u);
         bool ok_rst = ui_param_cfg_parse_u32(reset, &rst_u);
         bool ok_ds = ui_param_cfg_parse_u32(ds, &ds_u);
+        bool ok_up = ui_param_cfg_parse_u32(up, &up_u);
         bool ok_ckb = ui_param_cfg_parse_u32(ckb, &ckb_u);
         bool ok_cdly = ui_param_cfg_parse_u32(cdly, &cdly_u);
         if (ok_hb && ui->ParamConfig_ta_heartbeat && lv_obj_is_valid(ui->ParamConfig_ta_heartbeat)) {
@@ -1520,6 +1552,10 @@ static void ui_param_cfg_do_load_sync(lv_ui *ui)
             char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)ds_u);
             lv_textarea_set_text(ui->ParamConfig_ta_downsample, tmp);
         }
+        if (ok_up && ui->ParamConfig_ta_uploadpoints && lv_obj_is_valid(ui->ParamConfig_ta_uploadpoints)) {
+            char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)up_u);
+            lv_textarea_set_text(ui->ParamConfig_ta_uploadpoints, tmp);
+        }
         if (ok_ckb && ui->ParamConfig_ta_chunkkb && lv_obj_is_valid(ui->ParamConfig_ta_chunkkb)) {
             char tmp[16]; (void)snprintf(tmp, sizeof(tmp), "%lu", (unsigned long)ckb_u);
             lv_textarea_set_text(ui->ParamConfig_ta_chunkkb, tmp);
@@ -1537,6 +1573,7 @@ static void ui_param_cfg_do_load_sync(lv_ui *ui)
         if (ok_http) p.http_timeout_ms = http_u;
         if (ok_rst)  p.hardreset_sec   = rst_u;
         if (ok_ds)   p.wave_step       = ds_u;
+        if (ok_up)   p.upload_points   = up_u;
         if (ok_ckb)  p.chunk_kb        = ckb_u;
         if (ok_cdly) p.chunk_delay_ms  = cdly_u;
         ESP_CommParams_Apply(&p);
@@ -1559,11 +1596,12 @@ static void ui_param_cfg_do_save_sync(lv_ui *ui)
     const char *http  = (ui->ParamConfig_ta_httptimeout) ? lv_textarea_get_text(ui->ParamConfig_ta_httptimeout) : "";
     const char *reset = (ui->ParamConfig_ta_hardreset) ? lv_textarea_get_text(ui->ParamConfig_ta_hardreset) : "";
     const char *ds    = (ui->ParamConfig_ta_downsample) ? lv_textarea_get_text(ui->ParamConfig_ta_downsample) : "";
+    const char *up    = (ui->ParamConfig_ta_uploadpoints) ? lv_textarea_get_text(ui->ParamConfig_ta_uploadpoints) : "";
     const char *ckb   = (ui->ParamConfig_ta_chunkkb) ? lv_textarea_get_text(ui->ParamConfig_ta_chunkkb) : "";
     const char *cdly  = (ui->ParamConfig_ta_chunkdelay) ? lv_textarea_get_text(ui->ParamConfig_ta_chunkdelay) : "";
 
     /* 注意：这里仅做 UI->SD 的保存/回读验证，不写入任何实际运行参数。 */
-    FRESULT res = ui_param_cfg_write_file(hb, send, http, reset, ds, ckb, cdly);
+    FRESULT res = ui_param_cfg_write_file(hb, send, http, reset, ds, up, ckb, cdly);
 
     if (res == FR_OK) {
         /* 保存后立即回读一次，验证保存成功并回显 */
@@ -1635,7 +1673,7 @@ static void ParamConfig_kb_event_handler(lv_event_t *e)
 static void ParamConfig_apply_preset(lv_ui *ui,
                                      const char *hb, const char *send, const char *http,
                                      const char *reset, const char *chunkkb, const char *chunkdelay,
-                                     const char *downsample,
+                                     const char *downsample, const char *upload_points,
                                      const char *status_text)
 {
     if (!ui) return;
@@ -1658,6 +1696,8 @@ static void ParamConfig_apply_preset(lv_ui *ui,
         lv_textarea_set_text(ui->ParamConfig_ta_chunkdelay, chunkdelay ? chunkdelay : "");
     if (ui->ParamConfig_ta_downsample && lv_obj_is_valid(ui->ParamConfig_ta_downsample))
         lv_textarea_set_text(ui->ParamConfig_ta_downsample, downsample ? downsample : "");
+    if (ui->ParamConfig_ta_uploadpoints && lv_obj_is_valid(ui->ParamConfig_ta_uploadpoints))
+        lv_textarea_set_text(ui->ParamConfig_ta_uploadpoints, upload_points ? upload_points : "");
 
     ui_param_cfg_set_status(ui, status_text ? status_text : "正在保存...", 0xFFA500);
     lv_obj_update_layout(ui->ParamConfig);
@@ -1671,6 +1711,7 @@ static void ParamConfig_preset_lan_event_handler(lv_event_t *e)
     ParamConfig_apply_preset(ui,
                              "5000", "200", "1200", "60",
                              "0", "0", "1",
+                             "4096",
                              "已应用局域网参数，正在保存...");
 }
 
@@ -1680,6 +1721,7 @@ static void ParamConfig_preset_wan_event_handler(lv_event_t *e)
     ParamConfig_apply_preset(ui,
                              "120000", "1000", "8000", "60",
                              "1", "160", "1",
+                             "4096",
                              "已应用公网参数，正在保存...");
 }
 
@@ -1799,6 +1841,9 @@ void events_init_ParamConfig(lv_ui *ui)
     lv_obj_add_event_cb(ui->ParamConfig_ta_hardreset, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
     if (ui->ParamConfig_ta_downsample) {
         lv_obj_add_event_cb(ui->ParamConfig_ta_downsample, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
+    }
+    if (ui->ParamConfig_ta_uploadpoints) {
+        lv_obj_add_event_cb(ui->ParamConfig_ta_uploadpoints, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);
     }
     if (ui->ParamConfig_ta_chunkkb) {
         lv_obj_add_event_cb(ui->ParamConfig_ta_chunkkb, ParamConfig_ta_event_handler, LV_EVENT_ALL, ui);

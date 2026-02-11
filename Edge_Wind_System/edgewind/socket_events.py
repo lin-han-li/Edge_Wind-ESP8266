@@ -47,6 +47,7 @@ def init_socket_events(socketio, nodes):
                     'timestamp': node_data['timestamp'],
                     'report_mode': (node_data.get('data', {}) or {}).get('report_mode'),
                     'downsample_step': (node_data.get('data', {}) or {}).get('downsample_step'),
+                    'upload_points': (node_data.get('data', {}) or {}).get('upload_points'),
                 })
         
         emit('node_status_list', {'nodes': node_status_list})

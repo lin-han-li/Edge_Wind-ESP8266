@@ -267,6 +267,7 @@ active_nodes = {}
 node_commands = {}
 node_report_modes = {}
 node_downsample_commands = {}
+node_upload_points_commands = {}
 # 默认 60s，可用 EDGEWIND_NODE_TIMEOUT_SEC 调整（与 api.py / socket_events.py 保持一致）
 NODE_TIMEOUT = max(10, int(os.environ.get("EDGEWIND_NODE_TIMEOUT_SEC", "60") or "60"))
 
@@ -287,6 +288,7 @@ init_api_blueprint(
     node_commands,
     node_report_modes,
     node_downsample_commands,
+    node_upload_points_commands,
 )
 
 # 注册蓝图

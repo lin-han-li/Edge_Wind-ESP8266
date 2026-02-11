@@ -131,6 +131,9 @@ typedef struct
 	// Extra: Downsample
 	lv_obj_t *ParamConfig_lbl_downsample;
 	lv_obj_t *ParamConfig_ta_downsample;
+	// Extra: Upload points (after downsample)
+	lv_obj_t *ParamConfig_lbl_uploadpoints;
+	lv_obj_t *ParamConfig_ta_uploadpoints;
 	// Extra: Chunked send
 	lv_obj_t *ParamConfig_lbl_chunkkb;
 	lv_obj_t *ParamConfig_ta_chunkkb;

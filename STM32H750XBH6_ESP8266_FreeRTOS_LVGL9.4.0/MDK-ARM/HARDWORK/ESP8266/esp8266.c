@@ -290,6 +290,8 @@ void ESP_UI_Internal_OnLog(const char *line);
 static void ESP_SetServerReportMode(uint8_t full);
 static void ESP_SetServerDownsampleStep(uint32_t step);
 static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step);
+static void ESP_SetServerUploadPoints(uint32_t points);
+static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points);
 static bool ESP_CommParams_SaveToSD(void);
 
 // “核武器”：强制停止 USART2 的 RX DMA/中断状态机，切换到 AT(阻塞收发)前必须调用
@@ -314,6 +316,9 @@ static volatile uint8_t g_server_report_full_dirty = 0;
 // 服务器请求的降采样步进：1..64
 static volatile uint32_t g_server_downsample_step = (uint32_t)WAVEFORM_SEND_STEP;
 static volatile uint8_t g_server_downsample_dirty = 0;
+// 服务器请求的上传点数（降采样后）：256..4096，256步进
+static volatile uint32_t g_server_upload_points = (uint32_t)WAVEFORM_POINTS;
+static volatile uint8_t g_server_upload_points_dirty = 0;
 // 当检测到链路异常关键字（CLOSED/ERROR）时置 1，主循环触发软重连
 static volatile uint8_t g_link_reconnect_pending = 0;
 
@@ -376,6 +381,7 @@ static volatile uint32_t g_comm_min_interval_ms = (uint32_t)ESP_MIN_SEND_INTERVA
 static volatile uint32_t g_comm_http_timeout_ms = (uint32_t)ESP_HTTP_TIMEOUT_MS_DEFAULT;
 static volatile uint32_t g_comm_hardreset_sec   = (uint32_t)ESP_NO_SERVER_RX_HARDRESET_SEC;
 static volatile uint32_t g_comm_wave_step       = (uint32_t)WAVEFORM_SEND_STEP;
+static volatile uint32_t g_comm_upload_points  = (uint32_t)WAVEFORM_POINTS;
 static volatile uint32_t g_comm_chunk_kb        = (uint32_t)ESP_CHUNK_KB_DEFAULT;
 static volatile uint32_t g_comm_chunk_delay_ms  = (uint32_t)ESP_CHUNK_DELAY_MS_DEFAULT;
 
@@ -394,6 +400,7 @@ uint32_t ESP_CommParams_MinIntervalMs(void) { return (uint32_t)g_comm_min_interv
 uint32_t ESP_CommParams_HttpTimeoutMs(void) { return (uint32_t)g_comm_http_timeout_ms; }
 uint32_t ESP_CommParams_HardResetSec(void)  { return (uint32_t)g_comm_hardreset_sec; }
 uint32_t ESP_CommParams_WaveStep(void)      { return (uint32_t)g_comm_wave_step; }
+uint32_t ESP_CommParams_UploadPoints(void)  { return (uint32_t)g_comm_upload_points; }
 uint32_t ESP_CommParams_ChunkKb(void)       { return (uint32_t)g_comm_chunk_kb; }
 uint32_t ESP_CommParams_ChunkDelayMs(void)  { return (uint32_t)g_comm_chunk_delay_ms; }
 
@@ -405,6 +412,7 @@ void ESP_CommParams_Get(ESP_CommParams_t *out)
     out->http_timeout_ms = (uint32_t)g_comm_http_timeout_ms;
     out->hardreset_sec   = (uint32_t)g_comm_hardreset_sec;
     out->wave_step       = (uint32_t)g_comm_wave_step;
+    out->upload_points   = (uint32_t)g_comm_upload_points;
     out->chunk_kb        = (uint32_t)g_comm_chunk_kb;
     out->chunk_delay_ms  = (uint32_t)g_comm_chunk_delay_ms;
 }
@@ -425,6 +433,20 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
     uint32_t http  = clamp_u32(p->http_timeout_ms, 100u, 600000u);
     uint32_t hrs   = clamp_u32(p->hardreset_sec,   5u,   3600u);
     uint32_t step  = clamp_u32(p->wave_step,       1u,   64u);
+    uint32_t upmax = (uint32_t)WAVEFORM_POINTS;
+    uint32_t up    = (uint32_t)p->upload_points;
+    if (upmax == 0u) {
+        up = 0u;
+    } else if (upmax < 256u) {
+        up = upmax;
+    } else {
+        if (up < 256u) up = 256u;
+        if (up > upmax) up = upmax;
+        /* 容错：非 256 步进时就近取整到 256 倍数 */
+        up = ((up + 128u) / 256u) * 256u;
+        if (up < 256u) up = 256u;
+        if (up > upmax) up = upmax;
+    }
     uint32_t ckb   = p->chunk_kb;
     if (ckb > 16u) ckb = 16u; /* 允许 0 表示“关闭分段” */
     uint32_t cdly  = clamp_u32(p->chunk_delay_ms,  0u,   200u);
@@ -434,13 +456,14 @@ void ESP_CommParams_Apply(const ESP_CommParams_t *p)
     g_comm_http_timeout_ms = http;
     g_comm_hardreset_sec   = hrs;
     g_comm_wave_step       = step;
+    g_comm_upload_points  = up;
     g_comm_chunk_kb        = ckb;
     g_comm_chunk_delay_ms  = cdly;
 
 #if (ESP_DEBUG)
-    ESP_Log("[PARAM] apply hb=%lums min=%lums http=%lums hrs=%lus step=%lu chunk=%luKB delay=%lums\r\n",
+    ESP_Log("[PARAM] apply hb=%lums min=%lums http=%lums hrs=%lus step=%lu up=%lu chunk=%luKB delay=%lums\r\n",
             (unsigned long)hb, (unsigned long)minit, (unsigned long)http, (unsigned long)hrs,
-            (unsigned long)step, (unsigned long)ckb, (unsigned long)cdly);
+            (unsigned long)step, (unsigned long)up, (unsigned long)ckb, (unsigned long)cdly);
 #endif
 }
 
@@ -523,6 +546,9 @@ bool ESP_CommParams_LoadFromSD(void)
         } else if (strncmp(line, "DOWNSAMPLE_STEP=", 16) == 0) {
             uint32_t v;
             if (cfg_parse_u32_relaxed(line + 16, &v)) p.wave_step = v;
+        } else if (strncmp(line, "UPLOAD_POINTS=", 14) == 0) {
+            uint32_t v;
+            if (cfg_parse_u32_relaxed(line + 14, &v)) p.upload_points = v;
         } else if (strncmp(line, "CHUNK_KB=", 9) == 0) {
             uint32_t v;
             if (cfg_parse_u32_relaxed(line + 9, &v)) p.chunk_kb = v;
@@ -606,6 +632,7 @@ static bool ESP_CommParams_SaveToSD(void)
                      "HTTP_TIMEOUT_MS=%lu\n"
                      "HARDRESET_S=%lu\n"
                      "DOWNSAMPLE_STEP=%lu\n"
+                     "UPLOAD_POINTS=%lu\n"
                      "CHUNK_KB=%lu\n"
                      "CHUNK_DELAY_MS=%lu\n",
                      (unsigned long)p.heartbeat_ms,
@@ -613,6 +640,7 @@ static bool ESP_CommParams_SaveToSD(void)
                      (unsigned long)p.http_timeout_ms,
                      (unsigned long)p.hardreset_sec,
                      (unsigned long)p.wave_step,
+                     (unsigned long)p.upload_points,
                      (unsigned long)p.chunk_kb,
                      (unsigned long)p.chunk_delay_ms);
     if (n <= 0 || n >= (int)sizeof(buf)) {
@@ -1395,6 +1423,64 @@ static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step)
     return true;
 }
 
+static void ESP_SetServerUploadPoints(uint32_t points)
+{
+    uint32_t maxp = (uint32_t)WAVEFORM_POINTS;
+    if (maxp == 0u) {
+        points = 0u;
+    } else if (maxp < 256u) {
+        points = maxp;
+    } else {
+        if (points < 256u) points = 256u;
+        if (points > maxp) points = maxp;
+        /* 容错：非 256 步进时就近取整到 256 倍数 */
+        points = ((points + 128u) / 256u) * 256u;
+        if (points < 256u) points = 256u;
+        if (points > maxp) points = maxp;
+    }
+
+    if (g_server_upload_points != points)
+    {
+        g_server_upload_points = points;
+        g_server_upload_points_dirty = 1U;
+    }
+}
+
+static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points)
+{
+    if (!s || !out_points) {
+        return false;
+    }
+
+    const char *p = strstr(s, "\"upload_points\"");
+    if (!p) {
+        return false;
+    }
+    p += strlen("\"upload_points\"");
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p != ':') {
+        return false;
+    }
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p < '0' || *p > '9') {
+        return false;
+    }
+
+    uint32_t points = 0;
+    while (*p >= '0' && *p <= '9')
+    {
+        points = (points * 10U) + (uint32_t)(*p - '0');
+        if (points > 10000000U) {
+            break;
+        }
+        p++;
+    }
+
+    *out_points = points;
+    return true;
+}
+
 void ESP_Console_Init(void)
 {
 #if (ESP_CONSOLE_ENABLE)
@@ -1468,6 +1554,28 @@ void ESP_Console_Poll(void)
             ESP_Log("[服务器命令] downsample_step=%lu：已生效并保存到SD\r\n", (unsigned long)target);
         } else {
             ESP_Log("[服务器命令] downsample_step=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
+        }
+    }
+
+    // 2.2) 处理“服务器下发 upload_points”指令
+    if (g_server_upload_points_dirty)
+    {
+        g_server_upload_points_dirty = 0;
+
+        ESP_CommParams_t p;
+        ESP_CommParams_Get(&p);
+        uint32_t target = (uint32_t)g_server_upload_points;
+        ESP_Log("[服务器命令] upload_points=%lu：应用上传点数并写入SD\r\n", (unsigned long)target);
+
+        if (p.upload_points != target) {
+            p.upload_points = target;
+            ESP_CommParams_Apply(&p);
+        }
+
+        if (ESP_CommParams_SaveToSD()) {
+            ESP_Log("[服务器命令] upload_points=%lu：已生效并保存到SD\r\n", (unsigned long)target);
+        } else {
+            ESP_Log("[服务器命令] upload_points=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
         }
     }
 
@@ -1630,8 +1738,10 @@ void ESP_Post_Summary(void)
     uint32_t seq = ++s_seq;
 
     // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"channels\":[",
-                     g_sys_cfg.node_id, g_fault_code, (unsigned long)seq, (unsigned long)ESP_CommParams_WaveStep()))
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"channels\":[",
+                     g_sys_cfg.node_id, g_fault_code, (unsigned long)seq,
+                     (unsigned long)ESP_CommParams_WaveStep(),
+                     (unsigned long)ESP_CommParams_UploadPoints()))
         return;
 
     for (int i = 0; i < 4; i++)
@@ -1817,9 +1927,22 @@ void ESP_Post_Data(void)
     static uint32_t s_seq = 0;
     uint32_t seq = ++s_seq;
 
+    /* 限点上传：只上传“降采样后的前 N 点” */
+    uint32_t step_u = ESP_CommParams_WaveStep();
+    uint32_t limit_u = ESP_CommParams_UploadPoints();
+    uint32_t raw_count = (uint32_t)WAVEFORM_POINTS;
+    if (raw_count > 0u && step_u > 0u && limit_u > 0u) {
+        uint64_t need = ((uint64_t)(limit_u - 1u) * (uint64_t)step_u) + 1u;
+        if (need < (uint64_t)raw_count) {
+            raw_count = (uint32_t)need;
+        }
+    }
+
     // JSON Header
-    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"channels\":[",
-                    g_sys_cfg.node_id, g_fault_code, (unsigned long)seq, (unsigned long)ESP_CommParams_WaveStep()))
+    if (!ESP_Appendf(&p, end, "{\"node_id\":\"%s\",\"status\":\"online\",\"fault_code\":\"%s\",\"seq\":%lu,\"downsample_step\":%lu,\"upload_points\":%lu,\"channels\":[",
+                    g_sys_cfg.node_id, g_fault_code, (unsigned long)seq,
+                    (unsigned long)step_u,
+                    (unsigned long)limit_u))
         return;
 
     // 循环写入 4 个通道的数据
@@ -1840,7 +1963,7 @@ void ESP_Post_Data(void)
             return;
 
         // 波形数据（运行时降采样：step=1全量，step=4每4点取1点）
-        if (!Helper_FloatArray_To_String(&p, end, node_channels[i].waveform, WAVEFORM_POINTS, (int)ESP_CommParams_WaveStep()))
+        if (!Helper_FloatArray_To_String(&p, end, node_channels[i].waveform, (int)raw_count, (int)step_u))
             return;
 
         // 频谱数据
@@ -2227,6 +2350,11 @@ static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
     if (ESP_TryParseDownsampleStep(g_stream_window, &server_downsample_step))
     {
         ESP_SetServerDownsampleStep(server_downsample_step);
+    }
+    uint32_t server_upload_points = 0;
+    if (ESP_TryParseUploadPoints(g_stream_window, &server_upload_points))
+    {
+        ESP_SetServerUploadPoints(server_upload_points);
     }
 
     if (!g_link_reconnecting &&

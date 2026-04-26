@@ -337,6 +337,7 @@ static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points);
 static bool ESP_CommParams_SaveToSD(void);
 static void ESP_SPI_FullArmFrames(uint16_t frames);
 static void ESP_SPI_FullSetContinuous(uint8_t enable);
+static void ESP_SPI_FullCancelRuntime(void);
 static void ESP_SPI_FullPrintStatus(void);
 
 // “核武器”：强制停止 USART2 的 RX DMA/中断状态机，切换到 AT(阻塞收发)前必须调用
@@ -604,6 +605,13 @@ bool ESP_CommParams_LoadFromSD(void)
         } else if (strncmp(line, "UPLOAD_POINTS=", 14) == 0) {
             uint32_t v;
             if (cfg_parse_u32_relaxed(line + 14, &v)) p.upload_points = v;
+        } else if (strncmp(line, "REPORT_MODE=", 12) == 0) {
+            const char *v = line + 12;
+            if (strcmp(v, "full") == 0 || strcmp(v, "FULL") == 0 || strcmp(v, "1") == 0) {
+                g_server_report_full = 1U;
+            } else if (strcmp(v, "summary") == 0 || strcmp(v, "SUMMARY") == 0 || strcmp(v, "0") == 0) {
+                g_server_report_full = 0U;
+            }
         } else if (strncmp(line, "CHUNK_KB=", 9) == 0) {
             uint32_t v;
             if (cfg_parse_u32_relaxed(line + 9, &v)) p.chunk_kb = v;
@@ -680,7 +688,7 @@ static bool ESP_CommParams_SaveToSD(void)
         return false;
     }
 
-    char buf[320];
+    char buf[360];
     int n = snprintf(buf, sizeof(buf),
                      "HEARTBEAT_MS=%lu\n"
                      "SENDLIMIT_MS=%lu\n"
@@ -688,6 +696,7 @@ static bool ESP_CommParams_SaveToSD(void)
                      "HARDRESET_S=%lu\n"
                      "DOWNSAMPLE_STEP=%lu\n"
                      "UPLOAD_POINTS=%lu\n"
+                     "REPORT_MODE=%s\n"
                      "CHUNK_KB=%lu\n"
                      "CHUNK_DELAY_MS=%lu\n",
                      (unsigned long)p.heartbeat_ms,
@@ -696,6 +705,7 @@ static bool ESP_CommParams_SaveToSD(void)
                      (unsigned long)p.hardreset_sec,
                      (unsigned long)p.wave_step,
                      (unsigned long)p.upload_points,
+                     g_server_report_full ? "full" : "summary",
                      (unsigned long)p.chunk_kb,
                      (unsigned long)p.chunk_delay_ms);
     if (n <= 0 || n >= (int)sizeof(buf)) {
@@ -1407,6 +1417,20 @@ static void ESP_SPI_FullSetContinuous(uint8_t enable)
 #endif
 }
 
+static void ESP_SPI_FullCancelRuntime(void)
+{
+#if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
+    g_spi_full_continuous = 0U;
+    g_spi_full_manual_frames = 0U;
+    g_spi_full_waiting_result = 0U;
+    g_spi_full_result_ref_seq = 0U;
+    g_spi_full_result_frame_id = 0U;
+    g_spi_full_result_start_tick = 0U;
+    g_spi_full_result_last_log_tick = 0U;
+    g_spi_full_result_last_poll_tick = 0U;
+#endif
+}
+
 static void ESP_SPI_FullPrintStatus(void)
 {
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
@@ -1566,6 +1590,9 @@ static void ESP_SetServerReportMode(uint8_t full)
     {
         g_server_report_full = full;
         g_server_report_full_dirty = 1U;
+        if (full == 0U) {
+            ESP_SPI_FullCancelRuntime();
+        }
     }
 }
 
@@ -1688,6 +1715,29 @@ void ESP32_SPI_OnServerCommand(uint32_t command_id, uint32_t value, const char *
     }
 }
 
+static uint16_t ESP_FullEffectiveWaveCount(uint32_t source_count, uint32_t step, uint32_t upload_points)
+{
+    uint32_t count;
+
+    if (source_count == 0U) {
+        return 0U;
+    }
+    if (step < 1U) {
+        step = 1U;
+    }
+    if (step > 64U) {
+        step = 64U;
+    }
+    count = (source_count + step - 1U) / step;
+    if (upload_points > 0U && count > upload_points) {
+        count = upload_points;
+    }
+    if (count > 65535U) {
+        count = 65535U;
+    }
+    return (uint16_t)count;
+}
+
 static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points)
 {
     if (!s || !out_points) {
@@ -1772,6 +1822,13 @@ void ESP_Console_Poll(void)
         else
         {
             ESP_Log("[服务器命令] report_mode=summary：关闭全量上报\r\n");
+        }
+        if (ESP_CommParams_SaveToSD()) {
+            ESP_Log("[服务器命令] report_mode=%s：已保存到SD\r\n",
+                    g_server_report_full ? "full" : "summary");
+        } else {
+            ESP_Log("[服务器命令] report_mode=%s：保存SD失败\r\n",
+                    g_server_report_full ? "full" : "summary");
         }
     }
 
@@ -2184,6 +2241,9 @@ void ESP_Post_Data(void)
     const float *waves[4];
     const float *ffts[4];
     uint32_t elapsed_ms;
+    uint32_t step_u;
+    uint32_t limit_u;
+    uint16_t wave_send_count;
     bool ok;
     uint8_t one_shot = 0U;
 
@@ -2268,10 +2328,23 @@ void ESP_Post_Data(void)
 
     last_full_send_time = now_tick;
 
+    step_u = ESP_CommParams_WaveStep();
+    if (step_u < 1U) {
+        step_u = 1U;
+    }
+    if (step_u > 64U) {
+        step_u = 64U;
+    }
+    limit_u = ESP_CommParams_UploadPoints();
+    wave_send_count = ESP_FullEffectiveWaveCount((uint32_t)WAVEFORM_POINTS, step_u, limit_u);
+    if (wave_send_count == 0U) {
+        return;
+    }
+
     for (uint8_t i = 0U; i < 4U; i++) {
         int32_t cv_i = ESP_FloatToI32Scaled(node_channels[i].current_value);
         ch[i].channel_id = node_channels[i].id;
-        ch[i].waveform_count = (uint16_t)WAVEFORM_POINTS;
+        ch[i].waveform_count = wave_send_count;
         ch[i].fft_count = (uint16_t)FFT_POINTS;
         ch[i].value_scaled = cv_i;
         ch[i].current_value_scaled = cv_i;
@@ -2283,8 +2356,8 @@ void ESP_Post_Data(void)
     now_tick = HAL_GetTick();
     ok = ESP32_SPI_ReportFull(++s_full_frame_id,
                               (uint64_t)now_tick,
-                              1U,
-                              (uint32_t)WAVEFORM_POINTS,
+                              step_u,
+                              limit_u,
                               g_fault_code,
                               1U,
                               ch,
@@ -2309,13 +2382,16 @@ void ESP_Post_Data(void)
 
     if (!ok || (HAL_GetTick() - last_full_log) >= 1000U) {
         last_full_log = HAL_GetTick();
-        ESP_Log("[ESP32SPI] full tx frame=%lu elapsed=%lums try=%lu ok=%lu err=%lu points=%u fft=%u\r\n",
+        ESP_Log("[ESP32SPI] full tx frame=%lu elapsed=%lums try=%lu ok=%lu err=%lu wave=%u/%u step=%lu upload=%lu fft=%u\r\n",
                 (unsigned long)s_full_frame_id,
                 (unsigned long)elapsed_ms,
                 (unsigned long)full_try,
                 (unsigned long)full_ok,
                 (unsigned long)full_err,
+                (unsigned int)wave_send_count,
                 (unsigned int)WAVEFORM_POINTS,
+                (unsigned long)step_u,
+                (unsigned long)limit_u,
                 (unsigned int)FFT_POINTS);
     }
     if (one_shot != 0U && !ok && g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
@@ -3949,6 +4025,11 @@ static bool ESP_UI_DoTCP(void)
         g_ui_tcp_ok = 0;
         return false;
     }
+    if (!ESP_UI_SPI_LoadAndApplyConfig()) {
+        ESP_Log("[ESP32SPI] TCP denied: failed to apply STM32 config.\r\n");
+        g_ui_tcp_ok = 0;
+        return false;
+    }
     if (!ESP32_SPI_CloudConnect(5000U)) {
         ESP_UI_SPI_LogStatus("tcp/cloud failed");
         g_ui_tcp_ok = 0;
@@ -4036,6 +4117,11 @@ static bool ESP_UI_DoRegister(void)
         g_ui_reg_ok = 0;
         return false;
     }
+    if (!ESP_UI_SPI_LoadAndApplyConfig()) {
+        ESP_Log("[ESP32SPI] REG denied: failed to apply STM32 config.\r\n");
+        g_ui_reg_ok = 0;
+        return false;
+    }
     if (!ESP32_SPI_RegisterNode(20000U)) {
         ESP_UI_SPI_LogStatus("register failed");
         g_ui_reg_ok = 0;
@@ -4094,6 +4180,10 @@ static void ESP_UI_ToggleReport(void)
         if (!g_esp_ready)
         {
             ESP_Log("[UI] Report denied: link not ready (need REG first)\r\n");
+            return;
+        }
+        if (!ESP_UI_SPI_LoadAndApplyConfig()) {
+            ESP_Log("[ESP32SPI] Report denied: failed to apply STM32 config.\r\n");
             return;
         }
         if (!ESP32_SPI_StartReport(mode, 3000U)) {

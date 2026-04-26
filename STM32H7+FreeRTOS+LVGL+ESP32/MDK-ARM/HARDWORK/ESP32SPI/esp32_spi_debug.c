@@ -1639,6 +1639,8 @@ typedef struct {
     uint8_t channel_id;
     uint16_t element_offset;
     uint16_t element_count;
+    uint16_t source_stride;
+    uint16_t source_count;
     const float *values;
 } esp32_full_chunk_builder_ctx_t;
 
@@ -1664,7 +1666,12 @@ static bool build_wave_chunk_payload(uint8_t *payload, uint16_t payload_len, voi
     memcpy(payload, &prefix, sizeof(prefix));
 
     for (uint16_t i = 0U; i < chunk->element_count; i++) {
-        int32_t scaled = scale_float_to_i32(chunk->values[chunk->element_offset + i], 200.0f);
+        uint32_t source_index = (((uint32_t)chunk->element_offset + (uint32_t)i) *
+                                 (uint32_t)chunk->source_stride);
+        if (source_index >= (uint32_t)chunk->source_count) {
+            return false;
+        }
+        int32_t scaled = scale_float_to_i32(chunk->values[source_index], 200.0f);
         memcpy(payload + sizeof(prefix) + ((uint32_t)i * sizeof(scaled)), &scaled, sizeof(scaled));
     }
     return true;
@@ -1692,7 +1699,11 @@ static bool build_fft_chunk_payload(uint8_t *payload, uint16_t payload_len, void
     memcpy(payload, &prefix, sizeof(prefix));
 
     for (uint16_t i = 0U; i < chunk->element_count; i++) {
-        int16_t scaled = scale_float_to_i16(chunk->values[chunk->element_offset + i], 10.0f);
+        uint32_t source_index = (uint32_t)chunk->element_offset + (uint32_t)i;
+        if (source_index >= (uint32_t)chunk->source_count) {
+            return false;
+        }
+        int16_t scaled = scale_float_to_i16(chunk->values[source_index], 10.0f);
         memcpy(payload + sizeof(prefix) + ((uint32_t)i * sizeof(scaled)), &scaled, sizeof(scaled));
     }
     return true;
@@ -1702,6 +1713,8 @@ static bool send_wave_chunks(uint32_t frame_id,
                              uint8_t channel_id,
                              const float *waveform,
                              uint16_t waveform_count,
+                             uint16_t source_stride,
+                             uint16_t source_count,
                              uint32_t timeout_ms)
 {
     const uint16_t max_elements =
@@ -1720,6 +1733,8 @@ static bool send_wave_chunks(uint32_t frame_id,
         chunk.channel_id = channel_id;
         chunk.element_offset = offset;
         chunk.element_count = count;
+        chunk.source_stride = source_stride;
+        chunk.source_count = source_count;
         chunk.values = waveform;
 
         payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) + ((uint32_t)count * sizeof(int32_t)));
@@ -1741,6 +1756,7 @@ static bool send_fft_chunks(uint32_t frame_id,
                             uint8_t channel_id,
                             const float *fft,
                             uint16_t fft_count,
+                            uint16_t source_count,
                             uint32_t timeout_ms)
 {
     const uint16_t max_elements =
@@ -1759,6 +1775,8 @@ static bool send_fft_chunks(uint32_t frame_id,
         chunk.channel_id = channel_id;
         chunk.element_offset = offset;
         chunk.element_count = count;
+        chunk.source_stride = 1U;
+        chunk.source_count = source_count;
         chunk.values = fft;
 
         payload_len = (uint16_t)(sizeof(esp32_report_chunk_prefix_t) + ((uint32_t)count * sizeof(int16_t)));
@@ -1793,10 +1811,17 @@ bool ESP32_SPI_ReportFull(uint32_t frame_id,
     esp32_report_full_begin_payload_t begin;
     esp32_report_end_payload_t end_payload;
     uint32_t per_packet_timeout = (timeout_ms == 0U) ? 1500U : timeout_ms;
+    uint32_t wave_step = downsample_step;
 
     if (channels == NULL || waveforms == NULL || ffts == NULL ||
         channel_count == 0U || channel_count > 4U) {
         return false;
+    }
+    if (wave_step < 1U) {
+        wave_step = 1U;
+    }
+    if (wave_step > 64U) {
+        wave_step = 64U;
     }
     s_last_report_full_end_ref_seq = 0U;
     if (!ESP32_SPI_EnsureReady(ESP32_SPI_DEFAULT_TIMEOUT_MS)) {
@@ -1806,7 +1831,7 @@ bool ESP32_SPI_ReportFull(uint32_t frame_id,
     memset(&begin, 0, sizeof(begin));
     begin.frame_id = frame_id;
     begin.timestamp_ms = timestamp_ms;
-    begin.downsample_step = downsample_step;
+    begin.downsample_step = wave_step;
     begin.upload_points = upload_points;
     copy_text(begin.fault_code, sizeof(begin.fault_code), fault_code ? fault_code : "E00");
     begin.report_mode = 1U;
@@ -1815,9 +1840,14 @@ bool ESP32_SPI_ReportFull(uint32_t frame_id,
 
     for (uint8_t i = 0U; i < channel_count; i++) {
         if (waveforms[i] == NULL || ffts[i] == NULL ||
-            channels[i].waveform_count > waveform_count ||
             channels[i].fft_count > fft_count) {
             return false;
+        }
+        if (channels[i].waveform_count > 0U) {
+            uint32_t last_source_index = ((uint32_t)channels[i].waveform_count - 1U) * wave_step;
+            if (last_source_index >= (uint32_t)waveform_count) {
+                return false;
+            }
         }
         begin.channels[i].channel_id = channels[i].channel_id;
         begin.channels[i].waveform_count = channels[i].waveform_count;
@@ -1840,6 +1870,8 @@ bool ESP32_SPI_ReportFull(uint32_t frame_id,
                               channels[i].channel_id,
                               waveforms[i],
                               channels[i].waveform_count,
+                              (uint16_t)wave_step,
+                              waveform_count,
                               per_packet_timeout)) {
             return false;
         }
@@ -1847,6 +1879,7 @@ bool ESP32_SPI_ReportFull(uint32_t frame_id,
                              channels[i].channel_id,
                              ffts[i],
                              channels[i].fft_count,
+                             fft_count,
                              per_packet_timeout)) {
             return false;
         }

@@ -5098,7 +5098,7 @@
   </Group>
 
   <Group>
-    <GroupName>ESP8266</GroupName>
+    <GroupName>ESP32</GroupName>
     <tvExp>0</tvExp>
     <tvExpOptDlg>0</tvExpOptDlg>
     <cbSel>0</cbSel>
@@ -5110,8 +5110,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\ESP8266\esp8266.c</PathWithFileName>
-      <FilenameWithoutPath>esp8266.c</FilenameWithoutPath>
+      <PathWithFileName>.\HARDWORK\ESP32\esp32.c</PathWithFileName>
+      <FilenameWithoutPath>esp32.c</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -5122,8 +5122,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\ESP8266\esp8266.h</PathWithFileName>
-      <FilenameWithoutPath>esp8266.h</FilenameWithoutPath>
+      <PathWithFileName>.\HARDWORK\ESP32\esp32.h</PathWithFileName>
+      <FilenameWithoutPath>esp32.h</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>
@@ -5134,8 +5134,8 @@
       <tvExp>0</tvExp>
       <tvExpOptDlg>0</tvExpOptDlg>
       <bDave2>0</bDave2>
-      <PathWithFileName>.\HARDWORK\ESP8266\esp8266_config.h</PathWithFileName>
-      <FilenameWithoutPath>esp8266_config.h</FilenameWithoutPath>
+      <PathWithFileName>.\HARDWORK\ESP32\esp32_config.h</PathWithFileName>
+      <FilenameWithoutPath>esp32_config.h</FilenameWithoutPath>
       <RteFlg>0</RteFlg>
       <bShared>0</bShared>
     </File>

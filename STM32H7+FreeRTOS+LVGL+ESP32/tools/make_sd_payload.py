@@ -163,14 +163,14 @@ def _decode_c_string(s: str) -> str:
 def collect_ui_chinese_chars(root: Path) -> set[str]:
     """扫描 UI + 日志文案，提取所有中文字符（Unicode 0x4E00-0x9FFF）
 
-    说明：除 UI 文案外，还会扫描常见日志来源（ESP8266/SD_Card/Core），保证控制台/日志区域不缺字。
+    说明：除 UI 文案外，还会扫描常见日志来源（ESP32/SD_Card/Core），保证控制台/日志区域不缺字。
     """
     scan_dirs = [
         # UI（GUI Guider 生成代码 + 业务 UI 资源）
         root / "MDK-ARM/HARDWORK/GUI-Guider_Runtime/src/generated",
         root / "MDK-ARM/HARDWORK/EdgeWind_UI",
         # 日志（ESP/存储/系统）
-        root / "MDK-ARM/HARDWORK/ESP8266",
+        root / "MDK-ARM/HARDWORK/ESP32",
         root / "MDK-ARM/HARDWORK/SD_Card",
         root / "Core/Src",
         root / "Core/Inc",

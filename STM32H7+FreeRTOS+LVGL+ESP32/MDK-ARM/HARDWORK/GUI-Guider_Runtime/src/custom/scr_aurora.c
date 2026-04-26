@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "../../gui_assets.h"
-#include "../../../ESP8266/esp8266.h"
+#include "../../../ESP32/esp32.h"
 
 /**********************
  * DEFINES

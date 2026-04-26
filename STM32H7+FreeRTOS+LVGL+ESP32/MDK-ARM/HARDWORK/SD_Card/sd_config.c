@@ -4,7 +4,7 @@
 
 #include "ff.h"
 
-#include "../ESP8266/esp8266_config.h"
+#include "../ESP32/esp32_config.h"
 
 #include <stdio.h>
 #include <stdlib.h>

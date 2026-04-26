@@ -52,7 +52,7 @@
 
 #include <stdio.h>
 
-#include "esp8266.h"
+#include "esp32.h"
 #include "SPI_AD7606.h"
 #include "ad_acq_buffers.h"
 

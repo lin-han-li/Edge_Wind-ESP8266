@@ -1,4 +1,4 @@
-# 项目介绍：STM32H750XBH6 + ESP8266 + FreeRTOS + LVGL 9.4.0
+# 项目介绍：STM32H750XBH6 + ESP32 + FreeRTOS + LVGL 9.4.0
 
 本仓库是一套可直接落地使用的嵌入式固件工程，目标是把“高速采集 + 本地触控界面 + 外部资源管理 + WiFi 联网与数据上报”整合到 STM32H750XBH6（Cortex-M7）平台上。
 
@@ -15,7 +15,7 @@
   - memory-mapped 基址：`0x90000000`
 - 外部 SDRAM：FMC（用于双缓冲显存与大块网络 payload 缓冲）
 - SD 卡：SDMMC + FatFs（用于首次资源下发与部分参数持久化）
-- WiFi：ESP8266（USART2，AT 初始化 + TCP 透传）
+- WiFi：ESP32（USART2，AT 初始化 + TCP 透传）
 - 采样 ADC：AD7606（当前为 GPIO 模拟串行读取）
 
 ---
@@ -48,7 +48,7 @@
   - QSPI FatFs 分区挂载/必要时格式化
   - 从 SD 同步 GUI 资源到 QSPI（若资源不完整或强制同步）
   - 同步期间可挂起 ESP 任务，降低 SD/QSPI/FatFs 竞争
-- `ESP8266_Task`
+- `ESP8266_Task` (CubeMX generated name kept; actual ESP32 communication task)
   - 提供 UI 驱动的联网流程（WiFi/TCP/注册/开始上报）
   - 允许上报时执行波形+FFT 更新与发送
 - `LED_Task`
@@ -107,7 +107,7 @@ FFT 计算放在任务上下文执行（而不是 ISR），避免中断过长。
 
 实现位置：
 
-- `MDK-ARM/HARDWORK/ESP8266/esp8266.c`
+- `MDK-ARM/HARDWORK/ESP32/esp32.c`
   - `ESP_Update_Data_And_FFT()`：识别哪块缓冲新就绪 → 拷贝波形 → `arm_rfft_fast_f32()` + 幅值计算 → 填充 `fft_data[]`
   - 通过 `osDelay(0)` 分段让出 CPU，降低 UI 卡顿概率
 
@@ -118,17 +118,17 @@ FFT 计算放在任务上下文执行（而不是 ISR），避免中断过长。
 
 ---
 
-## 8) ESP8266 联网与数据上报
+## 8) ESP32 联网与数据上报
 
 串口与 DMA：
 
 - `Core/Src/usart.c`
-  - USART2：2,000,000 波特率，DMA circular RX + DMA TX（ESP8266 通信）
+  - USART2：2,000,000 波特率，DMA circular RX + DMA TX（ESP32 通信）
   - USART1：printf 日志输出（高波特率）
 
 ESP 驱动实现：
 
-- `MDK-ARM/HARDWORK/ESP8266/esp8266.c`
+- `MDK-ARM/HARDWORK/ESP32/esp32.c`
 
 关键能力：
 
@@ -177,7 +177,7 @@ ESP 驱动实现：
 
 ## 11) 仓库注意事项（凭据/配置）
 
-- `MDK-ARM/HARDWORK/ESP8266/esp8266_config.h` 可能包含 WiFi 账号密码与服务器地址。
+- `MDK-ARM/HARDWORK/ESP32/esp32_config.h` 可能包含 WiFi 账号密码与服务器地址。
   - 建议把它视为本地私有配置。
   - 不要把真实凭据提交到公开仓库。
 
@@ -189,7 +189,7 @@ ESP 驱动实现：
 - 任务与系统编排：`Core/Src/freertos.c`
 - 采样节拍：`Core/Src/tim.c`
 - 采样双缓冲：`Core/Src/ad_acq_buffers.c`
-- 上报与 FFT：`MDK-ARM/HARDWORK/ESP8266/esp8266.c`
+- 上报与 FFT：`MDK-ARM/HARDWORK/ESP32/esp32.c`
 - QSPI 驱动：`MDK-ARM/HARDWORK/W25Q256/qspi_w25q256.c`
 - 资源同步与校验：`MDK-ARM/HARDWORK/GUI-Guider_Runtime/gui_assets_sync.c`
 - LVGL 显示/触摸 port：`lvgl-9.4.0/examples/porting/lv_port_disp.c`、`lvgl-9.4.0/examples/porting/lv_port_indev.c`

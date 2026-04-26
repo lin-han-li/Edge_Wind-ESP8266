@@ -38,7 +38,7 @@
 #include "lv_port_indev.h"
 // Demo 已移除，使用自定义 EdgeWind UI
 #include "EdgeWind_UI/edgewind_ui.h"
-#include "esp8266.h"
+#include "esp32.h"
 #include "ESP32SPI/esp32_spi_debug.h"
 #include "qspi_w25q256.h"
 #include "GUI-Guider_Runtime/gui_assets_sync.h"

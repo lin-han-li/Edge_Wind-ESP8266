@@ -17,7 +17,7 @@
 #include "../custom/scr_aurora.h"
 #include "cmsis_os.h"
 #include "main.h"
-#include "../../../ESP8266/esp8266.h"
+#include "../../../ESP32/esp32.h"
 #include "fatfs.h"
 #include "diskio.h"
 #include "bsp_driver_sd.h"
@@ -303,7 +303,7 @@ static void WifiConfig_kb_event_handler(lv_event_t *e)
     }
 }
 
-/* ================= WifiConfig: 仅 UI 保存/读取（不改 ESP8266 配置） =================
+/* ================= WifiConfig: 仅 UI 保存/读取（不改 ESP32 配置） =================
  * 文件位置：SD(0:) -> 0:/config/ui_wifi.cfg
  * 格式（纯文本）：
  *   SSID=xxxx
@@ -1884,7 +1884,7 @@ static void DeviceConnect_back_event_handler(lv_event_t *e)
                           setup_scr_Aurora, LV_SCR_LOAD_ANIM_FADE_ON, 200, 20, false, false);
 }
 
-/* ================= DeviceConnect: ESP8266 UI 交互（对齐 ESP8266操作.HTML） ================= */
+/* ================= DeviceConnect: ESP32 UI 交互（对齐 ESP32操作.HTML） ================= */
 
 typedef enum
 {

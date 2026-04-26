@@ -1,6 +1,6 @@
-# STM32H750XBH6 + ESP8266 + FreeRTOS + LVGL 9.4.0
+# STM32H750XBH6 + ESP32 + FreeRTOS + LVGL 9.4.0
 
-基于 STM32H750XBH6 的嵌入式系统，集成 ESP8266 WiFi 通信、FreeRTOS 实时操作系统和 LVGL 9.4.0 图形界面。
+基于 STM32H750XBH6 的嵌入式系统，集成 ESP32 WiFi 通信、FreeRTOS 实时操作系统和 LVGL 9.4.0 图形界面。
 
 ## 硬件平台
 
@@ -9,7 +9,7 @@
 - **外部 RAM**: SDRAM (FMC 接口)
 - **显示**: 800x480 RGB LCD (LTDC 接口)
 - **触摸**: GT911/FT5206 电容触摸 (I2C 接口)
-- **通信**: ESP8266 WiFi 模块 (UART 接口)
+- **通信**: ESP32 WiFi 模块 (UART 接口)
 - **存储**: SD 卡 (SDMMC 接口)
 
 ## 软件架构
@@ -19,7 +19,7 @@
 - **RTOS**: FreeRTOS (任务调度、互斥锁、事件管理)
 - **GUI**: LVGL 9.4.0 (轻量级图形库)
 - **文件系统**: FatFs (SD 卡 + QSPI Flash 双挂载)
-- **WiFi**: ESP8266 AT 固件 (TCP/IP 通信)
+- **WiFi**: ESP32 AT 固件 (TCP/IP 通信)
 
 ### 目录结构
 
@@ -41,7 +41,7 @@
 │       ├── LCD/                  # LCD 驱动
 │       ├── Touch/                # 触摸驱动
 │       ├── W25Q256/              # QSPI Flash 驱动
-│       └── ESP8266/              # ESP8266 驱动
+│       └── ESP32/              # ESP32 驱动
 └── tools/                # 工具和资源
     └── sd_payload/       # SD 卡资源文件 (字体、图标)
 ```
@@ -63,7 +63,7 @@
    - 资源完整性校验
 
 3. **WiFi 通信**
-   - ESP8266 AT 指令控制
+   - ESP32 AT 指令控制
    - TCP 透传模式
    - 4 通道数据上报
    - 服务器下发命令接收
@@ -97,7 +97,7 @@
 |---------|--------|--------|------|
 | Main_Task | 16KB | Normal | 资源同步、GUI 初始化 |
 | LVGL940 | 16KB | High | LVGL 渲染 (5ms tick) |
-| ESP8266_Task | 8KB | Normal | WiFi 数据收发 |
+| ESP8266_Task (CubeMX generated name kept; ESP32 communication task) | 8KB | Normal | ESP32 communication and data reporting |
 
 #### 内存分配
 
@@ -153,7 +153,7 @@
 ### 串口日志
 
 - **USART1**: 系统日志输出 (115200-8-N-1)
-- **USART2**: ESP8266 通信
+- **USART2**: ESP32 通信
 
 ### 关键日志
 

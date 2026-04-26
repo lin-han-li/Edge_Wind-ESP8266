@@ -6,7 +6,7 @@
 #include "../EdgeWind_UI/edgewind_ui.h"
 #include "gui_assets.h"
 #include "src/generated/gui_guider.h"
-#include "esp8266.h"
+#include "esp32.h"
 
 lv_ui guider_ui;
 

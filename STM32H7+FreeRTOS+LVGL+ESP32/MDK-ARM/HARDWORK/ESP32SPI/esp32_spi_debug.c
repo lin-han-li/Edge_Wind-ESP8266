@@ -285,6 +285,13 @@ static uint32_t s_last_nack_ref_seq = 0U;
 static uint16_t s_last_nack_reason = 0U;
 static uint8_t s_session_mismatch_seen = 0U;
 
+__WEAK void ESP32_SPI_OnServerCommand(uint32_t command_id, uint32_t value, const char *text)
+{
+    (void)command_id;
+    (void)value;
+    (void)text;
+}
+
 static uint16_t crc16_le_update(uint16_t crc, const uint8_t *data, uint32_t len)
 {
     while (len-- > 0U) {
@@ -746,6 +753,23 @@ static void update_status_from_event(const esp32_event_payload_t *event)
         s_status.last_http_status = (int32_t)event->value0;
         s_status.last_frame_id = event->value1;
         copy_fixed_text(s_status.last_error, sizeof(s_status.last_error), event->text, sizeof(event->text));
+        break;
+    case ESP32_EVENT_SERVER_COMMAND:
+        switch (event->value0) {
+        case ESP32_SPI_SERVER_CMD_REPORT_MODE:
+            s_status.report_mode = (event->value1 != 0U) ? 1U : 0U;
+            break;
+        case ESP32_SPI_SERVER_CMD_DOWNSAMPLE_STEP:
+            s_status.downsample_step = event->value1;
+            break;
+        case ESP32_SPI_SERVER_CMD_UPLOAD_POINTS:
+            s_status.upload_points = event->value1;
+            break;
+        default:
+            break;
+        }
+        copy_fixed_text(s_status.last_error, sizeof(s_status.last_error), event->text, sizeof(event->text));
+        ESP32_SPI_OnServerCommand(event->value0, event->value1, event->text);
         break;
     case ESP32_EVENT_ERROR:
         copy_fixed_text(s_status.last_error, sizeof(s_status.last_error), event->text, sizeof(event->text));

@@ -11,6 +11,11 @@
 #define ESP32_SPI_RESULT_PENDING 0xFFFFU
 #endif
 
+#define ESP32_SPI_SERVER_CMD_RESET             1U
+#define ESP32_SPI_SERVER_CMD_REPORT_MODE       2U
+#define ESP32_SPI_SERVER_CMD_DOWNSAMPLE_STEP   3U
+#define ESP32_SPI_SERVER_CMD_UPLOAD_POINTS     4U
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -68,6 +73,7 @@ bool ESP32_SPI_StopReport(uint32_t timeout_ms);
 bool ESP32_SPI_QueryStatus(esp32_spi_status_t *out_status, uint32_t timeout_ms);
 const esp32_spi_status_t *ESP32_SPI_GetStatus(void);
 bool ESP32_SPI_PollEvents(uint32_t timeout_ms);
+void ESP32_SPI_OnServerCommand(uint32_t command_id, uint32_t value, const char *text);
 uint32_t ESP32_SPI_GetLastTxSeq(void);
 uint32_t ESP32_SPI_GetLastFullEndRefSeq(void);
 bool ESP32_SPI_GetTxResult(uint32_t ref_seq,

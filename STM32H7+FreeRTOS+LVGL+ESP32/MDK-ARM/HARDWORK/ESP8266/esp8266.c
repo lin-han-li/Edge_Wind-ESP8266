@@ -1640,6 +1640,39 @@ static void ESP_SetServerUploadPoints(uint32_t points)
     }
 }
 
+void ESP32_SPI_OnServerCommand(uint32_t command_id, uint32_t value, const char *text)
+{
+    switch (command_id)
+    {
+    case ESP32_SPI_SERVER_CMD_RESET:
+        g_server_reset_pending = 1U;
+        ESP_Log("[ESP32SPI] server command queued: reset\r\n");
+        break;
+    case ESP32_SPI_SERVER_CMD_REPORT_MODE:
+        ESP_SetServerReportMode((value != 0U) ? 1U : 0U);
+        ESP_Log("[ESP32SPI] server command queued: report_mode=%s\r\n",
+                (value != 0U) ? "full" : "summary");
+        break;
+    case ESP32_SPI_SERVER_CMD_DOWNSAMPLE_STEP:
+        ESP_SetServerDownsampleStep(value);
+        ESP_Log("[ESP32SPI] server command queued: downsample_step=%lu\r\n",
+                (unsigned long)value);
+        break;
+    case ESP32_SPI_SERVER_CMD_UPLOAD_POINTS:
+        ESP_SetServerUploadPoints(value);
+        ESP_Log("[ESP32SPI] server command queued: upload_points=%lu\r\n",
+                (unsigned long)value);
+        break;
+    default:
+        if (text != NULL) {
+            ESP_Log("[ESP32SPI] server command ignored: id=%lu text=%s\r\n",
+                    (unsigned long)command_id,
+                    text);
+        }
+        break;
+    }
+}
+
 static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points)
 {
     if (!s || !out_points) {
@@ -2129,6 +2162,7 @@ void ESP_Post_Data(void)
     static uint32_t last_full_log = 0;
     static uint32_t last_not_armed_log = 0;
     static uint32_t s_full_frame_id = 0;
+    static uint8_t s_full_server_auto_inflight = 0U;
     uint32_t now_tick = HAL_GetTick();
     uint32_t min_itv = ESP_CommParams_MinIntervalMs();
     esp32_spi_report_channel_t ch[4];
@@ -2164,9 +2198,12 @@ void ESP_Post_Data(void)
             g_spi_full_result_start_tick = 0U;
             g_spi_full_result_last_log_tick = 0U;
             g_spi_full_result_last_poll_tick = 0U;
-            if (g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
+            if (s_full_server_auto_inflight == 0U &&
+                g_spi_full_manual_frames == 0U &&
+                g_spi_full_continuous == 0U) {
                 ESP_SetServerReportMode(0U);
             }
+            s_full_server_auto_inflight = 0U;
         } else {
             uint32_t wait_elapsed = HAL_GetTick() - g_spi_full_result_start_tick;
             if (wait_elapsed >= ESP32_SPI_FULL_RESULT_TIMEOUT_MS) {
@@ -2180,9 +2217,12 @@ void ESP_Post_Data(void)
                 g_spi_full_result_start_tick = 0U;
                 g_spi_full_result_last_log_tick = 0U;
                 g_spi_full_result_last_poll_tick = 0U;
-                if (g_spi_full_manual_frames == 0U && g_spi_full_continuous == 0U) {
+                if (s_full_server_auto_inflight == 0U &&
+                    g_spi_full_manual_frames == 0U &&
+                    g_spi_full_continuous == 0U) {
                     ESP_SetServerReportMode(0U);
                 }
+                s_full_server_auto_inflight = 0U;
             } else if ((HAL_GetTick() - g_spi_full_result_last_log_tick) >= ESP32_SPI_FULL_WAIT_LOG_MS) {
                 g_spi_full_result_last_log_tick = HAL_GetTick();
                 ESP_Log("[ESP32SPI] full waiting http frame=%lu ref=%lu elapsed=%lums\r\n",
@@ -2200,14 +2240,15 @@ void ESP_Post_Data(void)
 
     if (g_spi_full_continuous == 0U) {
         if (g_spi_full_manual_frames == 0U) {
-            if ((now_tick - last_not_armed_log) >= ESP32_SPI_FULL_NOT_ARMED_LOG_MS) {
-                last_not_armed_log = now_tick;
-                ESP_Log("[ESP32SPI] full requested but not armed; type full1/full10/fullon on STM32 console.\r\n");
-            }
-            return;
+            (void)last_not_armed_log;
+            s_full_server_auto_inflight = 1U;
+        } else {
+            g_spi_full_manual_frames--;
+            one_shot = 1U;
+            s_full_server_auto_inflight = 0U;
         }
-        g_spi_full_manual_frames--;
-        one_shot = 1U;
+    } else {
+        s_full_server_auto_inflight = 0U;
     }
 
     last_full_send_time = now_tick;

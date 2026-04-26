@@ -1106,7 +1106,7 @@
     
     async function fetchActiveNodes() {
         try {
-            const response = await fetch('/api/get_active_nodes');
+            const response = await fetch('/api/get_active_nodes?include_series=1');
             
             // 处理 HTTP 错误（500, 404 等）
             if (!response.ok) {
@@ -2474,7 +2474,8 @@
                 // 因此不需要检查侧边栏更新
 
                 // 2. 故障检测和通知（立即执行，无延迟）-------------
-                const currentCode = msg.data.fault_code || msg.fault_code || 'E00';
+                const msgData = msg.data || {};
+                const currentCode = msgData.fault_code || msg.fault_code || 'E00';
                 const lastCode = nodeFaultHistory[msg.node_id];
                 const isInitial = msg.is_initial === true;  // 是否是初始订阅数据
 
@@ -2538,10 +2539,13 @@
 
                 // 3. Update Main View - 全量更新（不合并批处理）
                 if (currentNodeId && msg.node_id === currentNodeId) {
-                    const d = msg.data;
+                    const d = msgData;
                     
                     // 缓存最新数据包
                     lastCachedData = d;
+                    if (d.channels && Array.isArray(d.channels)) {
+                        updateChannelCardsFromData(d);
+                    }
 
                     const renderStart = performance.now();
                     renderDashboard(d);
@@ -2557,7 +2561,10 @@
                 } else if (!currentNodeId) {
                     // 自动选择第一个活动边缘节点
                     currentNodeId = msg.node_id;
-                    lastCachedData = msg.data;
+                    lastCachedData = msgData;
+                    if (lastCachedData.channels && Array.isArray(lastCachedData.channels)) {
+                        updateChannelCardsFromData(lastCachedData);
+                    }
                     renderDashboard(lastCachedData);
                     if (typeof window.updatePerfPanel === 'function') window.updatePerfPanel();  // 更新性能面板
                 }
@@ -2638,17 +2645,36 @@
                 const currentValue = channel.currentValue !== undefined ? channel.currentValue :
                                    channel.value !== undefined ? channel.value : 0;
                 
+                const incomingWaveform = Array.isArray(channel.waveform) ? channel.waveform : [];
+                const incomingSpectrum = Array.isArray(channel.fft_spectrum) ? channel.fft_spectrum : [];
+
                 nodeData[currentNodeId][channel.id].currentValue = parseFloat(currentValue) || 0;
-                nodeData[currentNodeId][channel.id].waveform = channel.waveform || [];
-                nodeData[currentNodeId][channel.id].fft_spectrum = channel.fft_spectrum || [];
+                if (incomingWaveform.length > 0) {
+                    nodeData[currentNodeId][channel.id].waveform = incomingWaveform;
+                } else if (!Array.isArray(nodeData[currentNodeId][channel.id].waveform)) {
+                    nodeData[currentNodeId][channel.id].waveform = [];
+                }
+                if (incomingSpectrum.length > 0) {
+                    nodeData[currentNodeId][channel.id].fft_spectrum = incomingSpectrum;
+                } else if (!Array.isArray(nodeData[currentNodeId][channel.id].fft_spectrum)) {
+                    nodeData[currentNodeId][channel.id].fft_spectrum = [];
+                }
                 
                 // 同时更新 NODE_CONFIGS 中的通道数据（确保数据同步）
                 if (NODE_CONFIGS[currentNodeId] && NODE_CONFIGS[currentNodeId].channels) {
                     const configChannel = NODE_CONFIGS[currentNodeId].channels.find(ch => ch.id === channel.id);
                     if (configChannel) {
                         configChannel.currentValue = parseFloat(currentValue) || 0;
-                        configChannel.waveform = channel.waveform || [];
-                        configChannel.fft_spectrum = channel.fft_spectrum || [];
+                        if (incomingWaveform.length > 0) {
+                            configChannel.waveform = incomingWaveform;
+                        } else if (!Array.isArray(configChannel.waveform)) {
+                            configChannel.waveform = [];
+                        }
+                        if (incomingSpectrum.length > 0) {
+                            configChannel.fft_spectrum = incomingSpectrum;
+                        } else if (!Array.isArray(configChannel.fft_spectrum)) {
+                            configChannel.fft_spectrum = [];
+                        }
                     }
                 }
             });
@@ -2758,8 +2784,16 @@
                     } else {
                         // 更新数据（直接使用后端数据，不生成）
                         nodeData[nodeId][channel.id].currentValue = currentValue;
-                        nodeData[nodeId][channel.id].waveform = waveform;
-                        nodeData[nodeId][channel.id].fft_spectrum = fft_spectrum;
+                        if (Array.isArray(waveform) && waveform.length > 0) {
+                            nodeData[nodeId][channel.id].waveform = waveform;
+                        } else if (!Array.isArray(nodeData[nodeId][channel.id].waveform)) {
+                            nodeData[nodeId][channel.id].waveform = [];
+                        }
+                        if (Array.isArray(fft_spectrum) && fft_spectrum.length > 0) {
+                            nodeData[nodeId][channel.id].fft_spectrum = fft_spectrum;
+                        } else if (!Array.isArray(nodeData[nodeId][channel.id].fft_spectrum)) {
+                            nodeData[nodeId][channel.id].fft_spectrum = [];
+                        }
                 }
             });
         });

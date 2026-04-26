@@ -10,6 +10,10 @@ class Config:
     
     # ==================== 安全配置 ====================
     SECRET_KEY = os.environ.get('SECRET_KEY', 'wind-farm-secret-key-2024')
+    # When multiple Flask apps share the same host, distinct cookie names
+    # avoid cross-app session/remember-token collisions across ports.
+    SESSION_COOKIE_NAME = os.environ.get('SESSION_COOKIE_NAME', 'edgewind_session')
+    REMEMBER_COOKIE_NAME = os.environ.get('REMEMBER_COOKIE_NAME', 'edgewind_remember')
     
     # ==================== 数据库配置 ====================
     # 重要：默认使用 instance/ 目录下的数据库文件，保持与原项目一致（避免“看起来没有识别到数据库”的错觉）

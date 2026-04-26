@@ -36,6 +36,7 @@ _last_hb_log_ts = {}
 _last_perf_log_ts = {}  # {node_id: ts}
 _last_processed_cache = {}  # {node_id: processed_data}：用于兜底填充空波形/频谱，避免前端周期性卡顿
 _last_bad_frame_log_ts = {}  # {node_id: ts}：坏帧诊断限频日志
+_last_series_log_ts = {}  # {node_id: ts}
 
 # 全局变量（将从app传入）
 active_nodes = {}  # 将在app.py中初始化并传入
@@ -772,7 +773,8 @@ def node_heartbeat():
             'voltage_waveform': [], 'voltage_spectrum': [],
             'voltage_neg_waveform': [], 'voltage_neg_spectrum': [],
             'current_waveform': [], 'current_spectrum': [],
-            'leakage_waveform': [], 'leakage_spectrum': []
+            'leakage_waveform': [], 'leakage_spectrum': [],
+            'channels': []
         }
 
         # 3. Parse Channels（注意：这里会处理波形/频谱大数组；后续 emit 时会按需降采样）
@@ -783,10 +785,18 @@ def node_heartbeat():
         bad_spec_type = 0
         bad_id_type = 0
         bad_val = 0
+        processed_channels = []
         for ch in raw_channels:
             if not isinstance(ch, dict):
                 continue
             ch_id = ch.get('id')
+            if ch_id is None:
+                ch_id = ch.get('channel_id')
+            if isinstance(ch_id, str):
+                try:
+                    ch_id = int(ch_id)
+                except Exception:
+                    pass
             label = (ch.get('label') or '').strip()
             val = ch.get('value', ch.get('current_value', 0))
             wave = ch.get('waveform', [])
@@ -811,6 +821,22 @@ def node_heartbeat():
             except Exception:
                 val_float = 0.0
                 bad_val += 1
+
+            processed_channels.append({
+                'id': ch_id,
+                'channel_id': ch_id,
+                'label': label,
+                'name': ch.get('name', label),
+                'unit': ch.get('unit', ''),
+                'type': ch.get('type', ''),
+                'range': ch.get('range', ''),
+                'color': ch.get('color', ''),
+                'value': val_float,
+                'currentValue': val_float,
+                'current_value': val_float,
+                'waveform': wave,
+                'fft_spectrum': spec,
+            })
 
             # 先按 label 识别（中文优先）
             mapped = False
@@ -843,14 +869,19 @@ def node_heartbeat():
                     processed_data['voltage_waveform'] = wave
                     processed_data['voltage_spectrum'] = spec
                 elif ch_id == 1:
+                    processed_data['voltage_neg'] = val_float
+                    processed_data['voltage_neg_waveform'] = wave
+                    processed_data['voltage_neg_spectrum'] = spec
+                elif ch_id == 2:
                     processed_data['current'] = val_float
                     processed_data['current_waveform'] = wave
                     processed_data['current_spectrum'] = spec
-                elif ch_id == 2:
+                elif ch_id == 3:
                     processed_data['leakage'] = val_float
                     processed_data['leakage_waveform'] = wave
                     processed_data['leakage_spectrum'] = spec
 
+        processed_data['channels'] = processed_channels
         t_parse = time.perf_counter()
 
         # 3.5) 兜底：检测“疑似坏帧”（解析到的 channels/波形/频谱为空或类型异常）
@@ -864,6 +895,21 @@ def node_heartbeat():
             'leakage_waveform', 'leakage_spectrum',
         )
         has_any_series = any(isinstance(processed_data.get(k), list) and len(processed_data.get(k)) > 0 for k in series_keys)
+        if has_any_series:
+            last_series = _last_series_log_ts.get(node_id, 0)
+            if current_timestamp - last_series >= 2:
+                _last_series_log_ts[node_id] = current_timestamp
+                series_lens = [
+                    (
+                        ch.get('id'),
+                        len(ch.get('waveform') or []),
+                        len(ch.get('fft_spectrum') or []),
+                    )
+                    for ch in processed_channels
+                    if isinstance(ch, dict)
+                ]
+                logger.info("[/api/node/heartbeat][series] node_id=%s ch=%d lens=%s",
+                            node_id, len(processed_channels), series_lens)
         metrics_all_zero = (
             float(processed_data.get('voltage') or 0) == 0.0 and
             float(processed_data.get('voltage_neg') or 0) == 0.0 and
@@ -891,6 +937,30 @@ def node_heartbeat():
                 )
         else:
             # 正常帧：写入缓存
+            if isinstance(prev, dict) and not has_any_series:
+                for key in series_keys:
+                    prev_series = prev.get(key)
+                    if isinstance(prev_series, list) and prev_series:
+                        processed_data[key] = prev_series
+
+                prev_channels = prev.get('channels') or []
+                if isinstance(prev_channels, list) and processed_channels:
+                    prev_by_id = {
+                        ch.get('id'): ch for ch in prev_channels
+                        if isinstance(ch, dict) and ch.get('id') is not None
+                    }
+                    for ch in processed_channels:
+                        if not isinstance(ch, dict):
+                            continue
+                        prev_ch = prev_by_id.get(ch.get('id'))
+                        if not isinstance(prev_ch, dict):
+                            continue
+                        if not ch.get('waveform') and isinstance(prev_ch.get('waveform'), list):
+                            ch['waveform'] = prev_ch['waveform']
+                        if not ch.get('fft_spectrum') and isinstance(prev_ch.get('fft_spectrum'), list):
+                            ch['fft_spectrum'] = prev_ch['fft_spectrum']
+                    processed_data['channels'] = processed_channels
+
             _last_processed_cache[node_id] = processed_data
             
             # 3.6) 保存历史数据（用于历史曲线回放）
@@ -1101,6 +1171,7 @@ def get_active_nodes():
     """获取活动节点列表"""
     try:
         current_time = time.time()
+        include_series = str(request.args.get('include_series', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         expired_nodes = []
         
         # 清理超时节点
@@ -1144,6 +1215,19 @@ def get_active_nodes():
                 pending_points = node_upload_points_commands.get(node_id)
                 if pending_points is not None:
                     node_data['upload_points'] = int(pending_points)
+            if include_series:
+                cached = _last_processed_cache.get(node_id)
+                if isinstance(cached, dict):
+                    for key in (
+                        'voltage_waveform', 'voltage_spectrum',
+                        'voltage_neg_waveform', 'voltage_neg_spectrum',
+                        'current_waveform', 'current_spectrum',
+                        'leakage_waveform', 'leakage_spectrum',
+                        'channels',
+                    ):
+                        value = cached.get(key)
+                        if isinstance(value, list) and value:
+                            node_data[key] = value
             active_nodes_list.append(node_data)
         
         return jsonify({

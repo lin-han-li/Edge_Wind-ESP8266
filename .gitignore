@@ -224,3 +224,9 @@ EdgeWind_Client/Client_build.ico
 EdgeWind_Client/Client_setup_build.ico
 EdgeWind_Client/dist/
 EdgeWind_Client/build/
+
+# STM32 migrated project runtime assets
+!STM32H7+FreeRTOS+LVGL+ESP32/tools/**/*.bin
+
+# ESP-IDF build outputs
+esp32_spi_coprocessor/build_edge/

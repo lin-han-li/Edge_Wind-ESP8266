@@ -37,6 +37,14 @@
 #define ESP32_SPI_LOG_TX_ACCEPTED 0
 #endif
 
+#ifndef ESP32_SPI_LOG_PACKET_TRACE
+#define ESP32_SPI_LOG_PACKET_TRACE 0
+#endif
+
+#ifndef ESP32_SPI_LOG_RESPONSE_TRACE
+#define ESP32_SPI_LOG_RESPONSE_TRACE 0
+#endif
+
 typedef enum {
     ESP32_MSG_NOOP = 0x00,
     ESP32_MSG_HELLO_REQ = 0x01,
@@ -384,6 +392,10 @@ static bool is_full_chunk_msg(uint8_t msg_type)
 
 static bool should_log_packet(uint8_t msg_type)
 {
+#if (!ESP32_SPI_LOG_PACKET_TRACE)
+    (void)msg_type;
+    return false;
+#else
     if (msg_type == ESP32_MSG_NOOP) {
         return false;
     }
@@ -398,6 +410,7 @@ static bool should_log_packet(uint8_t msg_type)
     }
 #endif
     return true;
+#endif
 }
 
 static void copy_text(char *dst, size_t dst_size, const char *src)
@@ -823,10 +836,12 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
         s_last_response_type = packet->header.msg_type;
         s_last_result_code = resp->result_code;
         copy_fixed_text(s_last_response_text, sizeof(s_last_response_text), resp->text, sizeof(resp->text));
+#if (ESP32_SPI_LOG_RESPONSE_TRACE)
         printf("[ESP32SPI] RESP type=%s result=%u text=%s\r\n",
                msg_name(packet->header.msg_type),
                (unsigned int)resp->result_code,
                s_last_response_text);
+#endif
     }
 
     switch ((esp32_msg_type_t)packet->header.msg_type) {
@@ -838,10 +853,12 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
             s_status.session_epoch = hello->boot_epoch;
             s_last_response_type = ESP32_MSG_HELLO_RESP;
             s_last_result_code = ESP32_RESULT_OK;
+#if (ESP32_SPI_LOG_RESPONSE_TRACE)
             printf("[ESP32SPI] HELLO boot=%lu caps=0x%08lX max_payload=%u\r\n",
                    (unsigned long)hello->boot_epoch,
                    (unsigned long)hello->capability_flags,
                    (unsigned int)hello->max_payload);
+#endif
         }
         break;
     case ESP32_MSG_STATUS_RESP:
@@ -850,6 +867,7 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
             update_status_from_payload(status);
             s_last_response_type = ESP32_MSG_STATUS_RESP;
             s_last_result_code = ESP32_RESULT_OK;
+#if (ESP32_SPI_LOG_RESPONSE_TRACE)
             printf("[ESP32SPI] STATUS ready=%u wifi=%u cloud=%u reg=%u report=%u ip=%s node=%s err=%s\r\n",
                    (unsigned int)s_status.ready,
                    (unsigned int)s_status.wifi_connected,
@@ -859,6 +877,7 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
                    s_status.ip_address,
                    s_status.node_id,
                    s_status.last_error);
+#endif
         }
         break;
     case ESP32_MSG_EVENT:
@@ -866,6 +885,7 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
         if (packet->header.payload_len >= sizeof(esp32_event_payload_t)) {
             const esp32_event_payload_t *event = (const esp32_event_payload_t *)packet->payload;
             update_status_from_event(event);
+#if (ESP32_SPI_LOG_RESPONSE_TRACE)
             printf("[ESP32SPI] EVENT type=%u result=%u v0=%lu v1=%lu text=",
                    (unsigned int)event->event_type,
                    (unsigned int)event->result_code,
@@ -873,6 +893,7 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
                    (unsigned long)event->value1);
             print_text64(event->text);
             printf("\r\n");
+#endif
         }
         break;
     case ESP32_MSG_TX_ACCEPTED:
@@ -896,11 +917,13 @@ static bool handle_rx_packet(const esp32_spi_packet_t *packet)
             s_last_tx_result_frame_id = result->ref_frame_id;
             s_status.last_http_status = result->http_status;
             s_status.last_frame_id = result->ref_frame_id;
+#if (ESP32_SPI_LOG_RESPONSE_TRACE)
             printf("[ESP32SPI] TX_RESULT ref_seq=%lu frame=%lu http=%ld result=%ld\r\n",
                    (unsigned long)result->ref_seq,
                    (unsigned long)result->ref_frame_id,
                    (long)result->http_status,
                    (long)result->result_code);
+#endif
         }
         break;
     case ESP32_MSG_NACK:
@@ -982,6 +1005,9 @@ static bool poll_noop(uint32_t timeout_ms)
         }
         if (rx_type != ESP32_MSG_NOOP) {
             return true;
+        }
+        if (timeout_ms == 0U) {
+            break;
         }
         HAL_Delay(10);
     } while ((HAL_GetTick() - start) < timeout_ms);

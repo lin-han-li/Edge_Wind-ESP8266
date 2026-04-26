@@ -32,7 +32,7 @@
 #endif
 
 #ifndef ESP32_SPI_STRESS_TEST
-#define ESP32_SPI_STRESS_TEST 1
+#define ESP32_SPI_STRESS_TEST 0
 #endif
 
 #ifndef ESP32_SPI_STRESS_FULL_UPLOAD
@@ -66,6 +66,9 @@
 #endif
 #ifndef ESP32_SPI_FULL_RESULT_POLL_MS
 #define ESP32_SPI_FULL_RESULT_POLL_MS 100U
+#endif
+#ifndef ESP32_SPI_ASYNC_EVENT_POLL_MS
+#define ESP32_SPI_ASYNC_EVENT_POLL_MS 100U
 #endif
 
 /* 引用 usart.c 中定义的句柄 */
@@ -329,6 +332,7 @@ static void StrTrimInPlace(char *s);
 static void ESP_StreamRx_Start(void);
 static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len);
 void ESP_UI_Internal_OnLog(const char *line);
+static void ESP_SPI_PollAsyncEvents(void);
 static void ESP_SetServerReportMode(uint8_t full);
 static void ESP_SetServerDownsampleStep(uint32_t step);
 static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step);
@@ -1586,13 +1590,13 @@ static void ESP_Console_HandleLine(char *line)
 static void ESP_SetServerReportMode(uint8_t full)
 {
     full = (full != 0U) ? 1U : 0U;
+    if (full == 0U) {
+        ESP_SPI_FullCancelRuntime();
+    }
     if (g_server_report_full != full)
     {
         g_server_report_full = full;
         g_server_report_full_dirty = 1U;
-        if (full == 0U) {
-            ESP_SPI_FullCancelRuntime();
-        }
     }
 }
 
@@ -1600,9 +1604,8 @@ static void ESP_SetServerDownsampleStep(uint32_t step)
 {
     if (step < 1U) step = 1U;
     if (step > 64U) step = 64U;
-    if (g_server_downsample_step != step)
-    {
-        g_server_downsample_step = step;
+    g_server_downsample_step = step;
+    if (ESP_CommParams_WaveStep() != step) {
         g_server_downsample_dirty = 1U;
     }
 }
@@ -1660,15 +1663,19 @@ static void ESP_SetServerUploadPoints(uint32_t points)
         if (points > maxp) points = maxp;
     }
 
-    if (g_server_upload_points != points)
-    {
-        g_server_upload_points = points;
+    g_server_upload_points = points;
+    if (ESP_CommParams_UploadPoints() != points) {
         g_server_upload_points_dirty = 1U;
     }
 }
 
 void ESP32_SPI_OnServerCommand(uint32_t command_id, uint32_t value, const char *text)
 {
+    static uint32_t last_report_mode_active_log = 0U;
+    static uint32_t last_downsample_active_log = 0U;
+    static uint32_t last_upload_points_active_log = 0U;
+    uint32_t now = HAL_GetTick();
+
     switch (command_id)
     {
     case ESP32_SPI_SERVER_CMD_RESET:
@@ -1678,29 +1685,42 @@ void ESP32_SPI_OnServerCommand(uint32_t command_id, uint32_t value, const char *
     case ESP32_SPI_SERVER_CMD_REPORT_MODE:
     {
         uint8_t full = (value != 0U) ? 1U : 0U;
-        if (g_server_report_full != full) {
-            ESP_SetServerReportMode(full);
+        uint8_t before = g_server_report_full;
+        ESP_SetServerReportMode(full);
+        if (before != full) {
             ESP_Log("[ESP32SPI] server command queued: report_mode=%s\r\n",
+                    full ? "full" : "summary");
+        } else if ((now - last_report_mode_active_log) >= 10000U) {
+            last_report_mode_active_log = now;
+            ESP_Log("[ESP32SPI] server command received: report_mode=%s (already active)\r\n",
                     full ? "full" : "summary");
         }
         break;
     }
     case ESP32_SPI_SERVER_CMD_DOWNSAMPLE_STEP:
     {
-        uint32_t before = g_server_downsample_step;
+        uint32_t before = ESP_CommParams_WaveStep();
         ESP_SetServerDownsampleStep(value);
-        if (g_server_downsample_step != before) {
+        if (before != g_server_downsample_step) {
             ESP_Log("[ESP32SPI] server command queued: downsample_step=%lu\r\n",
+                    (unsigned long)g_server_downsample_step);
+        } else if ((now - last_downsample_active_log) >= 10000U) {
+            last_downsample_active_log = now;
+            ESP_Log("[ESP32SPI] server command received: downsample_step=%lu (already active)\r\n",
                     (unsigned long)g_server_downsample_step);
         }
         break;
     }
     case ESP32_SPI_SERVER_CMD_UPLOAD_POINTS:
     {
-        uint32_t before = g_server_upload_points;
+        uint32_t before = ESP_CommParams_UploadPoints();
         ESP_SetServerUploadPoints(value);
-        if (g_server_upload_points != before) {
+        if (before != g_server_upload_points) {
             ESP_Log("[ESP32SPI] server command queued: upload_points=%lu\r\n",
+                    (unsigned long)g_server_upload_points);
+        } else if ((now - last_upload_points_active_log) >= 10000U) {
+            last_upload_points_active_log = now;
+            ESP_Log("[ESP32SPI] server command received: upload_points=%lu (already active)\r\n",
                     (unsigned long)g_server_upload_points);
         }
         break;
@@ -1802,6 +1822,12 @@ void ESP_Console_Poll(void)
         ESP_Console_HandleLine(g_console_line);
         g_console_line_len = 0;
     }
+
+    /*
+     * ESP32 的服务器命令是异步 SPI EVENT，不像旧 ESP8266 UART 回包会自然流入 DMA。
+     * 周期性拉取事件，保证 downsample/upload/report_mode 命令能被及时应用和保存。
+     */
+    ESP_SPI_PollAsyncEvents();
 
     // 2) 处理“服务器下发 reset”指令
     if (g_server_reset_pending)
@@ -3928,6 +3954,34 @@ static void ESP_UI_SPI_LogStatus(const char *prefix)
             st->last_error);
 }
 #endif
+
+static void ESP_SPI_PollAsyncEvents(void)
+{
+#if (EW_USE_ESP32_SPI_UI)
+    static uint32_t last_poll_tick = 0U;
+    uint32_t now = HAL_GetTick();
+
+    if (g_esp_ready == 0U) {
+        return;
+    }
+    if (HAL_GPIO_ReadPin(ESP32_READY_GPIO_Port, ESP32_READY_Pin) != GPIO_PIN_SET) {
+        return;
+    }
+#if (ESP32_SPI_ENABLE_FULL_UPLOAD)
+    if (g_spi_full_waiting_result != 0U) {
+        return;
+    }
+#endif
+    if ((now - last_poll_tick) < ESP32_SPI_ASYNC_EVENT_POLL_MS) {
+        return;
+    }
+
+    last_poll_tick = now;
+    (void)ESP32_SPI_PollEvents(0U);
+#else
+    (void)0;
+#endif
+}
 
 static bool ESP_UI_DoWiFi(void)
 {

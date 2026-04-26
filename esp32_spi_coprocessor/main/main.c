@@ -719,7 +719,11 @@ static void handle_protocol_packet(const protocol_packet_t *packet, size_t rx_by
         if (err == ESP_OK) {
             const protocol_report_full_begin_payload_t *begin =
                 (const protocol_report_full_begin_payload_t *) packet->payload;
-            spi_link_flush_tx_queue();
+            /* Preserve pending async control events such as server commands.
+             * The STM32 master already tolerates out-of-band EVENT packets while
+             * waiting for TX_ACCEPTED/TX_RESULT, so flushing here can drop
+             * downsample/upload/report_mode updates during continuous full upload.
+             */
             send_tx_accepted(packet->header.seq, begin->frame_id);
             protocol_mark_processed(packet);
         } else {

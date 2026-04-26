@@ -24,8 +24,26 @@
 #include <stdio.h>
 int fputc(int ch, FILE *f)
 {
-	HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1,100);	// 
-	return (ch);
+	static char s_tx_buf[256];
+	static uint16_t s_tx_len = 0U;
+	uint8_t byte = (uint8_t)ch;
+	(void)f;
+
+	if (s_tx_len < (uint16_t)(sizeof(s_tx_buf) - 1U))
+	{
+		s_tx_buf[s_tx_len++] = (char)byte;
+	}
+
+	if (byte == '\n' || s_tx_len >= (uint16_t)(sizeof(s_tx_buf) - 1U))
+	{
+		if (s_tx_len > 0U)
+		{
+			HAL_UART_Transmit(&huart1, (uint8_t *)s_tx_buf, s_tx_len, 10U);
+			s_tx_len = 0U;
+		}
+	}
+
+	return ch;
 }
 /* USER CODE END 0 */
 

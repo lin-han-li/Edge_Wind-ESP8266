@@ -70,6 +70,12 @@
 #ifndef ESP32_SPI_ASYNC_EVENT_POLL_MS
 #define ESP32_SPI_ASYNC_EVENT_POLL_MS 100U
 #endif
+#ifndef ESP_LOG_UART_MIN_INTERVAL_MS
+#define ESP_LOG_UART_MIN_INTERVAL_MS 20U
+#endif
+#ifndef ESP_COMM_PARAMS_SAVE_DEBOUNCE_MS
+#define ESP_COMM_PARAMS_SAVE_DEBOUNCE_MS 200U
+#endif
 
 /* 引用 usart.c 中定义的句柄 */
 extern UART_HandleTypeDef huart2;
@@ -339,6 +345,8 @@ static bool ESP_TryParseDownsampleStep(const char *s, uint32_t *out_step);
 static void ESP_SetServerUploadPoints(uint32_t points);
 static bool ESP_TryParseUploadPoints(const char *s, uint32_t *out_points);
 static bool ESP_CommParams_SaveToSD(void);
+static void ESP_CommParams_RequestDeferredSave(uint8_t reason_mask);
+static void ESP_CommParams_ProcessDeferredSave(void);
 static void ESP_SPI_FullArmFrames(uint16_t frames);
 static void ESP_SPI_FullSetContinuous(uint8_t enable);
 static void ESP_SPI_FullCancelRuntime(void);
@@ -363,6 +371,12 @@ static volatile uint8_t g_server_reset_pending = 0;
 // 服务器请求的上报模式：0=summary, 1=full
 static volatile uint8_t g_server_report_full = 0;
 static volatile uint8_t g_server_report_full_dirty = 0;
+#define ESP_COMM_SAVE_REASON_REPORT_MODE      0x01U
+#define ESP_COMM_SAVE_REASON_DOWNSAMPLE_STEP  0x02U
+#define ESP_COMM_SAVE_REASON_UPLOAD_POINTS    0x04U
+static volatile uint8_t g_comm_params_save_pending = 0U;
+static volatile uint8_t g_comm_params_save_reason_mask = 0U;
+static uint32_t g_comm_params_save_due_tick = 0U;
 #if (EW_USE_ESP32_SPI_UI && ESP32_SPI_ENABLE_FULL_UPLOAD)
 static volatile uint16_t g_spi_full_manual_frames = 0;
 static volatile uint8_t g_spi_full_continuous = (ESP32_SPI_FULL_CONTINUOUS_DEFAULT != 0) ? 1U : 0U;
@@ -1327,9 +1341,9 @@ void ESP_Update_Data_And_FFT(void)
         sum1 += (double)v1;
         sum2 += (double)v2;
         sum3 += (double)v3;
-        /* 每 1024 点让出 CPU，避免长时间占用导致 UI 卡死（4096 点波形） */
+        /* 每 1024 点真正让出 1 tick，osDelay(0) 不保证会切走当前任务。 */
         if ((i + 1) % 1024 == 0)
-            osDelay(0);
+            osDelay(1);
     }
 
     node_channels[0].current_value = ESP_SafeFloat((float)(sum0 / (double)WAVEFORM_POINTS));
@@ -1348,7 +1362,7 @@ void ESP_Update_Data_And_FFT(void)
             node_channels[ch].fft_data[i] = (fft_mag_buf[i] / (float)(WAVEFORM_POINTS / 2)) * 2.0f;
         }
         /* 每通道 FFT 完成后让出 CPU，避免 4 通道连续计算导致 UI 卡死 */
-        osDelay(0);
+        osDelay(1);
     }
 
     last_ready = ready;
@@ -1525,7 +1539,6 @@ static void ESP_Console_HandleLine(char *line)
             return;
         }
     }
-
     if (strcmp(line, "full1") == 0 || strcmp(line, "FULL1") == 0)
     {
         ESP_SPI_FullArmFrames(1U);
@@ -1666,6 +1679,54 @@ static void ESP_SetServerUploadPoints(uint32_t points)
     g_server_upload_points = points;
     if (ESP_CommParams_UploadPoints() != points) {
         g_server_upload_points_dirty = 1U;
+    }
+}
+
+static void ESP_CommParams_RequestDeferredSave(uint8_t reason_mask)
+{
+    g_comm_params_save_reason_mask = (uint8_t)(g_comm_params_save_reason_mask | reason_mask);
+    g_comm_params_save_pending = 1U;
+    g_comm_params_save_due_tick = HAL_GetTick() + ESP_COMM_PARAMS_SAVE_DEBOUNCE_MS;
+}
+
+static void ESP_CommParams_ProcessDeferredSave(void)
+{
+    uint32_t now = HAL_GetTick();
+    uint8_t reason_mask;
+    char reason_text[48];
+    int n = 0;
+
+    if (g_comm_params_save_pending == 0U) {
+        return;
+    }
+    if ((int32_t)(now - g_comm_params_save_due_tick) < 0) {
+        return;
+    }
+
+    reason_mask = g_comm_params_save_reason_mask;
+    g_comm_params_save_pending = 0U;
+    g_comm_params_save_reason_mask = 0U;
+
+    if (reason_mask & ESP_COMM_SAVE_REASON_REPORT_MODE) {
+        n += snprintf(reason_text + n, sizeof(reason_text) - (size_t)n, "%sreport_mode",
+                      (n > 0) ? "+" : "");
+    }
+    if (reason_mask & ESP_COMM_SAVE_REASON_DOWNSAMPLE_STEP) {
+        n += snprintf(reason_text + n, sizeof(reason_text) - (size_t)n, "%sdownsample_step",
+                      (n > 0) ? "+" : "");
+    }
+    if (reason_mask & ESP_COMM_SAVE_REASON_UPLOAD_POINTS) {
+        n += snprintf(reason_text + n, sizeof(reason_text) - (size_t)n, "%supload_points",
+                      (n > 0) ? "+" : "");
+    }
+    if (n <= 0) {
+        (void)snprintf(reason_text, sizeof(reason_text), "runtime");
+    }
+
+    if (ESP_CommParams_SaveToSD()) {
+        ESP_Log("[PARAM] saved to SD (%s)\r\n", reason_text);
+    } else {
+        ESP_Log("[PARAM] save SD failed (%s)\r\n", reason_text);
     }
 }
 
@@ -1841,6 +1902,11 @@ void ESP_Console_Poll(void)
     if (g_server_report_full_dirty)
     {
         g_server_report_full_dirty = 0;
+        ESP_Log("[SERVER CMD] report_mode=%s applied, SD save deferred\r\n",
+                g_server_report_full ? "full" : "summary");
+        ESP_CommParams_RequestDeferredSave(ESP_COMM_SAVE_REASON_REPORT_MODE);
+    }
+#if 0
         if (g_server_report_full)
         {
             ESP_Log("[服务器命令] report_mode=full：请求全量上报\r\n");
@@ -1860,8 +1926,26 @@ void ESP_Console_Poll(void)
 
     // 2.1) 处理“服务器下发 downsample_step”指令
     if (g_server_downsample_dirty)
+    #endif
+    if (g_server_downsample_dirty)
     {
         g_server_downsample_dirty = 0;
+        ESP_CommParams_t p;
+        uint32_t target;
+
+        ESP_CommParams_Get(&p);
+        target = (uint32_t)g_server_downsample_step;
+        if (target < 1U) target = 1U;
+        if (target > 64U) target = 64U;
+        if (p.wave_step != target) {
+            p.wave_step = target;
+            ESP_CommParams_Apply(&p);
+        }
+        ESP_Log("[SERVER CMD] downsample_step=%lu applied, SD save deferred\r\n",
+                (unsigned long)target);
+        ESP_CommParams_RequestDeferredSave(ESP_COMM_SAVE_REASON_DOWNSAMPLE_STEP);
+    }
+#if 0
 
         ESP_CommParams_t p;
         ESP_CommParams_Get(&p);
@@ -1884,8 +1968,24 @@ void ESP_Console_Poll(void)
 
     // 2.2) 处理“服务器下发 upload_points”指令
     if (g_server_upload_points_dirty)
+    #endif
+    if (g_server_upload_points_dirty)
     {
         g_server_upload_points_dirty = 0;
+        ESP_CommParams_t p;
+        uint32_t target;
+
+        ESP_CommParams_Get(&p);
+        target = (uint32_t)g_server_upload_points;
+        if (p.upload_points != target) {
+            p.upload_points = target;
+            ESP_CommParams_Apply(&p);
+        }
+        ESP_Log("[SERVER CMD] upload_points=%lu applied, SD save deferred\r\n",
+                (unsigned long)target);
+        ESP_CommParams_RequestDeferredSave(ESP_COMM_SAVE_REASON_UPLOAD_POINTS);
+    }
+#if 0
 
         ESP_CommParams_t p;
         ESP_CommParams_Get(&p);
@@ -1903,6 +2003,9 @@ void ESP_Console_Poll(void)
             ESP_Log("[服务器命令] upload_points=%lu：已生效，但保存SD失败\r\n", (unsigned long)target);
         }
     }
+
+#endif
+    ESP_CommParams_ProcessDeferredSave();
 
     if (g_report_enabled && g_link_reconnect_pending && g_esp_ready && !g_link_reconnecting && !g_uart2_at_mode)
     {
@@ -2791,6 +2894,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 // ---------------- USART2 流式接收：解析后端 /api/node/heartbeat 响应里的 command=reset ----------------
 static void ESP_StreamRx_Start(void)
 {
+#if (EW_USE_ESP32_SPI_UI)
+    g_usart2_rx_started = 0;
+    g_stream_rx_last_pos = 0;
+    g_stream_window_len = 0;
+    return;
+#endif
     memset(g_stream_rx_buf, 0, sizeof(g_stream_rx_buf));
     memset(g_stream_window, 0, sizeof(g_stream_window));
     g_stream_window_len = 0;
@@ -2822,6 +2931,11 @@ static void ESP_StreamRx_Start(void)
 
 static void ESP_StreamRx_Feed(const uint8_t *data, uint16_t len)
 {
+#if (EW_USE_ESP32_SPI_UI)
+    (void)data;
+    (void)len;
+    return;
+#endif
     if (!data || len == 0)
         return;
     g_usart2_rx_bytes += len;
@@ -3577,6 +3691,9 @@ static void ESP_Exit_Transparent_Mode(void)
 static void ESP_Log(const char *format, ...)
 {
     char log_buf[256];
+    static uint32_t s_last_uart_log_tick = 0U;
+    static uint16_t s_dropped_uart_logs = 0U;
+    uint32_t now = HAL_GetTick();
     va_list args;
     va_start(args, format);
     vsnprintf(log_buf, sizeof(log_buf), format, args);
@@ -3586,7 +3703,34 @@ static void ESP_Log(const char *format, ...)
     UART_HandleTypeDef *hu = ESP_GetLogUart();
     if (hu)
     {
-        HAL_UART_Transmit(hu, (uint8_t *)log_buf, (uint16_t)strlen(log_buf), 100);
+        uint8_t allow_uart = 1U;
+        if (g_report_enabled != 0U &&
+            (uint32_t)(now - s_last_uart_log_tick) < ESP_LOG_UART_MIN_INTERVAL_MS)
+        {
+            allow_uart = 0U;
+        }
+
+        if (allow_uart != 0U)
+        {
+            if (s_dropped_uart_logs != 0U)
+            {
+                char drop_buf[48];
+                int drop_len = snprintf(drop_buf, sizeof(drop_buf),
+                                        "[ESPLOG] dropped %u lines\r\n",
+                                        (unsigned int)s_dropped_uart_logs);
+                if (drop_len > 0)
+                {
+                    HAL_UART_Transmit(hu, (uint8_t *)drop_buf, (uint16_t)drop_len, 10U);
+                }
+                s_dropped_uart_logs = 0U;
+            }
+            HAL_UART_Transmit(hu, (uint8_t *)log_buf, (uint16_t)strlen(log_buf), 10U);
+            s_last_uart_log_tick = now;
+        }
+        else if (s_dropped_uart_logs < 0xFFFFU)
+        {
+            s_dropped_uart_logs++;
+        }
     }
     else
     {

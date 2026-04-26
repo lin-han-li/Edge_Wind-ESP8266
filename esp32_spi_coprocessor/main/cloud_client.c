@@ -273,6 +273,7 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
     if (err == ESP_OK) {
         err = read_response_body(client, response, sizeof(response), &http_status);
         if (err == ESP_OK) {
+            bool has_server_command = report_codec_parse_server_command(response, &server_command);
             post_event(CLOUD_CLIENT_EVENT_REPORT_RESULT,
                        ESP_OK,
                        http_status,
@@ -281,7 +282,7 @@ static esp_err_t post_report_request(const app_config_snapshot_t *snapshot,
                        NULL,
                        (http_status >= 200 && http_status < 300) ? "report_ok" : "report_http_fail");
 
-            if (report_codec_parse_server_command(response, &server_command)) {
+            if (has_server_command) {
                 post_event(CLOUD_CLIENT_EVENT_SERVER_COMMAND,
                            ESP_OK,
                            http_status,
@@ -360,7 +361,8 @@ static esp_err_t post_empty_heartbeat_request(const app_config_snapshot_t *snaps
     if (err == ESP_OK) {
         err = read_response_body(client, response, sizeof(response), &http_status);
         if (err == ESP_OK) {
-            if (report_codec_parse_server_command(response, &server_command)) {
+            bool has_server_command = report_codec_parse_server_command(response, &server_command);
+            if (has_server_command) {
                 post_event(CLOUD_CLIENT_EVENT_SERVER_COMMAND, ESP_OK, http_status, 0, 0, &server_command, "server_command");
             }
             if (http_status == 401 || http_status == 404) {

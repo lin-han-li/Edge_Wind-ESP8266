@@ -570,15 +570,13 @@ static bool copy_payload_builder(uint8_t *payload, uint16_t payload_len, void *c
 
 static uint16_t spi_xfer_size_for_payload(uint16_t payload_len)
 {
-    uint32_t xfer_size = sizeof(esp32_spi_header_t) + (uint32_t)payload_len;
-
-    if (xfer_size < ESP32_SPI_MIN_XFER_SIZE) {
-        xfer_size = ESP32_SPI_MIN_XFER_SIZE;
-    }
-    if (xfer_size > ESP32_SPI_FRAME_SIZE) {
-        xfer_size = ESP32_SPI_FRAME_SIZE;
-    }
-    return (uint16_t)xfer_size;
+    (void)payload_len;
+    /* Keep every master transaction at the fixed protocol wire size.
+     * The ESP32 slave always arms a full-size DMA transaction, and short
+     * 512-byte control/noop transfers were intermittently triggering CRC/NACK
+     * failures under continuous full-upload traffic.
+     */
+    return ESP32_SPI_FRAME_SIZE;
 }
 
 static bool spi_transaction_built_payload(uint8_t tx_type,
@@ -1774,6 +1772,7 @@ static bool send_wave_chunks(uint32_t frame_id,
             return false;
         }
         offset = (uint16_t)(offset + count);
+        taskYIELD();
     }
     return true;
 }
@@ -1816,6 +1815,7 @@ static bool send_fft_chunks(uint32_t frame_id,
             return false;
         }
         offset = (uint16_t)(offset + count);
+        taskYIELD();
     }
     return true;
 }

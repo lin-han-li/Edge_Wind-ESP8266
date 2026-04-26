@@ -1903,6 +1903,7 @@ typedef struct
 static osMessageQueueId_t g_dc_q = NULL;
 static lv_timer_t *g_dc_timer = NULL;
 static lv_ui *g_dc_ui = NULL;
+static uint8_t g_dc_screen_active = 0;
 static uint8_t g_dc_auto_running = 0;
 static uint32_t g_dc_report_stop_tick = 0;
 static uint8_t g_dc_reg_dimmed = 0;
@@ -2029,7 +2030,7 @@ static void dc_reg_countdown_update(lv_ui *ui)
 
 static void dc_queue_log_line(const char *line)
 {
-    if (!g_dc_q || !line)
+    if (!g_dc_q || !line || !g_dc_screen_active)
         return;
     dc_msg_t m;
     memset(&m, 0, sizeof(m));
@@ -2049,14 +2050,40 @@ static void dc_queue_log_line(const char *line)
     (void)osMessageQueuePut(g_dc_q, &m, 0U, 0U);
 }
 
+static bool dc_log_is_runtime_noise(const char *line)
+{
+    if (!line)
+        return true;
+    if (strncmp(line, "[调试]", 6) == 0)
+        return true;
+    if (strncmp(line, "[ESPLOG] dropped", 16) == 0)
+        return true;
+    if (strncmp(line, "[PARAM] apply", 13) == 0)
+        return true;
+    if (strncmp(line, "[ESP32SPI] full tx", 18) == 0)
+        return true;
+    if (strncmp(line, "[ESP32SPI] full waiting", 23) == 0)
+        return true;
+    if (strncmp(line, "[ESP32SPI] full http", 20) == 0)
+        return true;
+    if (strncmp(line, "[ESP32SPI] summary tx", 21) == 0)
+        return true;
+    return false;
+}
+
 static void dc_post_log_from_esp(const char *line, void *ctx)
 {
     (void)ctx;
-    if (!g_dc_q || !line)
+    if (!g_dc_q || !line || !g_dc_screen_active)
         return;
     /* 默认过滤掉“每秒刷屏”的调试统计，避免长期运行导致 LVGL 卡死 */
 #ifndef EW_DEVICECONNECT_LOG_VERBOSE
 #define EW_DEVICECONNECT_LOG_VERBOSE 0
+#endif
+#if (EW_DEVICECONNECT_LOG_VERBOSE == 0)
+    if (dc_log_is_runtime_noise(line)) {
+        return;
+    }
 #endif
 #if (EW_DEVICECONNECT_LOG_VERBOSE == 0)
     if (strncmp(line, "[调试]", 6) == 0) {
@@ -2066,7 +2093,7 @@ static void dc_post_log_from_esp(const char *line, void *ctx)
     /* 日志节流：200ms 内仅投递 1 条，其余丢弃并汇总 */
     static uint32_t last_log_tick = 0;
     static uint16_t dropped = 0;
-    uint32_t now = lv_tick_get();
+    uint32_t now = HAL_GetTick();
     if (last_log_tick != 0U && (now - last_log_tick) < 200U) {
         dropped++;
         return;
@@ -2084,7 +2111,7 @@ static void dc_post_log_from_esp(const char *line, void *ctx)
 static void dc_post_step_from_esp(esp_ui_cmd_t step, bool ok, void *ctx)
 {
     (void)ctx;
-    if (!g_dc_q)
+    if (!g_dc_q || !g_dc_screen_active)
         return;
     dc_msg_t m;
     memset(&m, 0, sizeof(m));
@@ -2314,10 +2341,38 @@ static void DeviceConnect_cfg_load_timer_cb(lv_timer_t *t)
 
 static void DeviceConnect_screen_event_handler(lv_event_t *e)
 {
-    if (lv_event_get_code(e) != LV_EVENT_SCREEN_LOADED)
-        return;
+    lv_event_code_t code = lv_event_get_code(e);
     lv_ui *ui = (lv_ui *)lv_event_get_user_data(e);
+
+    if (code == LV_EVENT_SCREEN_UNLOADED)
+    {
+        if (!ui || g_dc_ui == ui)
+        {
+            if (g_dc_cfg_timer)
+            {
+                lv_timer_del(g_dc_cfg_timer);
+                g_dc_cfg_timer = NULL;
+            }
+            g_dc_screen_active = 0;
+            g_dc_auto_running = 0;
+            g_dc_cfg_loaded = 0;
+            g_dc_console_len = 0;
+            g_dc_lbl_reg_countdown = NULL;
+            ESP_UI_SetHooks(NULL, NULL, NULL, NULL);
+            if (g_dc_q)
+            {
+                dc_msg_t drop;
+                while (osMessageQueueGet(g_dc_q, &drop, NULL, 0U) == osOK) {
+                }
+            }
+        }
+        return;
+    }
+
+    if (code != LV_EVENT_SCREEN_LOADED)
+        return;
     if (!ui) return;
+    g_dc_screen_active = 1;
     g_dc_cfg_loaded = 0;
     /* 进入界面立即同步一次“上报 UI 状态”，避免实际在上报但 UI 显示 Idle */
     dc_sync_reporting_ui(ui);
@@ -2583,7 +2638,9 @@ static void dc_set_done(lv_ui *ui, esp_ui_cmd_t step, bool ok)
 static void dc_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!g_dc_q || !g_dc_ui)
+    if (!g_dc_q || !g_dc_ui || !g_dc_screen_active)
+        return;
+    if (!g_dc_ui->DeviceConnect || !lv_obj_is_valid(g_dc_ui->DeviceConnect))
         return;
 
     /* 停止上报后的倒计时：每次都刷新一次显示；到期后触发“需重新注册” */
@@ -2821,9 +2878,11 @@ void events_init_DeviceConnect(lv_ui *ui)
 
     /* 每次进入 DeviceConnect 界面都自动从 SD 加载配置并应用到 ESP 缓冲区 */
     lv_obj_add_event_cb(ui->DeviceConnect, DeviceConnect_screen_event_handler, LV_EVENT_SCREEN_LOADED, ui);
+    lv_obj_add_event_cb(ui->DeviceConnect, DeviceConnect_screen_event_handler, LV_EVENT_SCREEN_UNLOADED, ui);
 
     /* 注册 hook：ESP 任务会把日志/步骤结果通过消息队列投递给 LVGL 线程 */
     g_dc_ui = ui;
+    g_dc_screen_active = 1;
     if (!g_dc_q)
         g_dc_q = osMessageQueueNew(24, sizeof(dc_msg_t), NULL);
     ESP_UI_SetHooks(dc_post_log_from_esp, NULL, dc_post_step_from_esp, NULL);

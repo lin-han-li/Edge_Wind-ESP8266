@@ -564,7 +564,7 @@ void ESP8266_Task(void *argument)
   ESP_UI_TaskInit();
   if (self)
   {
-    osThreadSetPriority(self, osPriorityNormal);
+    osThreadSetPriority(self, osPriorityBelowNormal);
   }
   /* Infinite loop */
   for(;;)

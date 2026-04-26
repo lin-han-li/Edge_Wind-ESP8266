@@ -1649,20 +1649,35 @@ void ESP32_SPI_OnServerCommand(uint32_t command_id, uint32_t value, const char *
         ESP_Log("[ESP32SPI] server command queued: reset\r\n");
         break;
     case ESP32_SPI_SERVER_CMD_REPORT_MODE:
-        ESP_SetServerReportMode((value != 0U) ? 1U : 0U);
-        ESP_Log("[ESP32SPI] server command queued: report_mode=%s\r\n",
-                (value != 0U) ? "full" : "summary");
+    {
+        uint8_t full = (value != 0U) ? 1U : 0U;
+        if (g_server_report_full != full) {
+            ESP_SetServerReportMode(full);
+            ESP_Log("[ESP32SPI] server command queued: report_mode=%s\r\n",
+                    full ? "full" : "summary");
+        }
         break;
+    }
     case ESP32_SPI_SERVER_CMD_DOWNSAMPLE_STEP:
+    {
+        uint32_t before = g_server_downsample_step;
         ESP_SetServerDownsampleStep(value);
-        ESP_Log("[ESP32SPI] server command queued: downsample_step=%lu\r\n",
-                (unsigned long)value);
+        if (g_server_downsample_step != before) {
+            ESP_Log("[ESP32SPI] server command queued: downsample_step=%lu\r\n",
+                    (unsigned long)g_server_downsample_step);
+        }
         break;
+    }
     case ESP32_SPI_SERVER_CMD_UPLOAD_POINTS:
+    {
+        uint32_t before = g_server_upload_points;
         ESP_SetServerUploadPoints(value);
-        ESP_Log("[ESP32SPI] server command queued: upload_points=%lu\r\n",
-                (unsigned long)value);
+        if (g_server_upload_points != before) {
+            ESP_Log("[ESP32SPI] server command queued: upload_points=%lu\r\n",
+                    (unsigned long)g_server_upload_points);
+        }
         break;
+    }
     default:
         if (text != NULL) {
             ESP_Log("[ESP32SPI] server command ignored: id=%lu text=%s\r\n",
